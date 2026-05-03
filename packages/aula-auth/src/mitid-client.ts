@@ -157,7 +157,9 @@ export class MitidClient {
   private pollUrl?: string;
   private ticket?: string;
   private authResponse?: string;
-  private authResponseSignature?: string;
+  // Note: the signature is also returned by the poll but only used by the
+  // legacy /prove + /verify flow we don't implement (the modern /complete
+  // path takes only M1 + flowValueProof).
 
   // After authentication:
   private finalizationSessionId?: string;
@@ -265,7 +267,8 @@ export class MitidClient {
     const interpreted = interpretPollResponse(JSON.parse(res.body) as AppPollResponse);
     if (interpreted.kind === 'completed') {
       this.authResponse = interpreted.response;
-      this.authResponseSignature = interpreted.responseSignature;
+      // We discard `interpreted.responseSignature` — it's only used by the
+      // legacy /prove + /verify dance which we don't implement.
     }
     return interpreted;
   }

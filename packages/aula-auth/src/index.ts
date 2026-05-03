@@ -1,3 +1,43 @@
+export {
+  type AulaAuthMethod,
+  AulaLoginClient,
+  type AulaLoginClientOptions,
+  type AulaLoginCredentials,
+  AulaLoginError,
+  type AulaLoginOptions,
+  type IdentitySelector,
+} from './aula-login-client.ts';
+export {
+  type AulaOAuthConfig,
+  type AulaTokens,
+  type BuildAuthorizeUrlOpts,
+  buildAuthorizeUrl,
+  DEFAULT_OAUTH_CONFIG,
+  exchangeAuthorizationCode,
+  isTokenExpired,
+  OAuthError,
+  oauthUrls,
+  parseAuthorizationCallback,
+  parseTokenResponse,
+  refreshAccessToken,
+} from './aula-oauth.ts';
+export {
+  AulaSamlError,
+  type BrokerFormData,
+  type BrokerSessionParams,
+  buildMitidCompletionForm,
+  type ConfirmationFormData,
+  detectConfirmationForm,
+  type ExtractedSamlForm,
+  extractBrokerParams,
+  extractSamlForm,
+  type IdentityOption,
+  type MitidCompletionParams,
+  pageTitle,
+  parseBrokerIdpForm,
+  parseIdentitySelectionPage,
+  parseMitidVerificationToken,
+} from './aula-saml-flow.ts';
 export { AulaCookieJar } from './cookies.ts';
 export {
   type AesGcmCiphertext,
