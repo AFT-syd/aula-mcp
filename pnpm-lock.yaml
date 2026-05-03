@@ -35,18 +35,12 @@ importers:
       tough-cookie:
         specifier: ^6.0.1
         version: 6.0.1
-      undici:
-        specifier: ^8.2.0
-        version: 8.2.0
 
   packages/aula-client:
     dependencies:
       '@aula-mcp/aula-auth':
         specifier: workspace:*
         version: link:../aula-auth
-      undici:
-        specifier: ^8.2.0
-        version: 8.2.0
 
   packages/mcp-server:
     dependencies:
@@ -555,10 +549,6 @@ packages:
   undici@7.25.0:
     resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
     engines: {node: '>=20.18.1'}
-
-  undici@8.2.0:
-    resolution: {integrity: sha512-Z+4Hx9GE26Lh9Upwfnc8C7SsrpBPGaM/Gm6kMFtiG7c+5IvQKlXi/t+9x9DrrCh29cww5TSP9YdVaBcnLDs5fQ==}
-    engines: {node: '>=22.19.0'}
 
   unpipe@1.0.0:
     resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
@@ -1124,8 +1114,6 @@ snapshots:
   undici-types@7.19.2: {}
 
   undici@7.25.0: {}
-
-  undici@8.2.0: {}
 
   unpipe@1.0.0: {}
 
