@@ -51,6 +51,9 @@ importers:
 
   packages/mcp-server:
     dependencies:
+      '@aula-mcp/aula-auth':
+        specifier: workspace:*
+        version: link:../aula-auth
       '@aula-mcp/aula-client':
         specifier: workspace:*
         version: link:../aula-client

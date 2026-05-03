@@ -15,6 +15,7 @@
     "start": "bun src/server.ts"
   },
   "dependencies": {
+    "@aula-mcp/aula-auth": "workspace:*",
     "@aula-mcp/aula-client": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.12.16",
