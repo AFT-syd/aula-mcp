@@ -3,7 +3,7 @@
  * Inputs are validated by Zod 4 schemas registered with McpServer.
  */
 
-import { AulaStepUpRequiredError } from '@aula-mcp/aula-client';
+import { AulaStepUpRequiredError, isoWeekString } from '@aula-mcp/aula-client';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AulaContext } from './aula-context.ts';
@@ -117,6 +117,124 @@ export function registerTools(server: McpServer, context: AulaContext): void {
         ...(args.pageSize !== undefined ? { pageSize: args.pageSize } : {}),
       });
       return jsonContent(threads);
+    },
+  );
+
+  // --- aula.ugeplan.* ------------------------------------------------------
+  //
+  // Each provider has its own tool. The agent picks the right one based on
+  // the institution-to-provider mapping (currently: try whichever the
+  // school uses; long term, plumb this into discover).
+
+  const integrationContextShape = {
+    childIds: z.array(z.number().int().positive()).min(1),
+    institutionCodes: z.array(z.string().min(1)).min(1),
+    isoWeek: z
+      .string()
+      .regex(/^\d{4}-W\d{2}$/)
+      .optional()
+      .describe('ISO week, e.g. "2026-W18". Defaults to the current week.'),
+  } as const;
+
+  async function buildIntegrationCtx(args: {
+    childIds: number[];
+    institutionCodes: string[];
+    isoWeek?: string | undefined;
+  }) {
+    await context.getClient();
+    const record = context.record;
+    if (!record) throw new Error('AulaContext: no token record loaded');
+    return {
+      isoWeek: args.isoWeek ?? isoWeekString(),
+      sessionId: record.username,
+      guardianId: record.username,
+      childIds: args.childIds,
+      institutionCodes: args.institutionCodes,
+    };
+  }
+
+  server.registerTool(
+    'aula.ugeplan.easyiq',
+    {
+      title: 'EasyIQ weekly plan',
+      description:
+        'Weekly plan from EasyIQ for the given children. Use when the school is on EasyIQ.',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const easyiq = await context.getEasyIq();
+      return jsonContent(await easyiq.getWeekPlan(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
+    'aula.ugeplan.meebook',
+    {
+      title: 'Meebook weekly plan',
+      description:
+        'Weekly plan from Meebook for the given children. Use when the school is on Meebook.',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const meebook = await context.getMeebook();
+      return jsonContent(await meebook.getWeekPlan(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
+    'aula.opgaver.minuddannelse',
+    {
+      title: 'Min Uddannelse opgaveliste',
+      description: 'Homework / task list from Min Uddannelse for the given children.',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const mu = await context.getMinUddannelse();
+      return jsonContent(await mu.getOpgaver(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
+    'aula.ugebrev.minuddannelse',
+    {
+      title: 'Min Uddannelse ugebrev',
+      description: 'Weekly newsletter (ugebrev) from Min Uddannelse.',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const mu = await context.getMinUddannelse();
+      return jsonContent(await mu.getUgebrev(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
+    'aula.huskelisten.systematic',
+    {
+      title: 'Systematic Huskelisten reminders',
+      description:
+        'Homework reminders from Systematic. Args may include `from`/`to` ISO YYYY-MM-DD dates.',
+      inputSchema: {
+        ...integrationContextShape,
+        fromDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        toDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      },
+    },
+    async (args) => {
+      const sys = await context.getSystematic();
+      const baseCtx = await buildIntegrationCtx(args);
+      return jsonContent(
+        await sys.getReminders({
+          ...baseCtx,
+          ...(args.fromDate ? { fromDate: args.fromDate } : {}),
+          ...(args.toDate ? { toDate: args.toDate } : {}),
+        }),
+      );
     },
   );
 

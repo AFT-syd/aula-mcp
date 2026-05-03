@@ -18,7 +18,14 @@ import {
   type TokenStore,
   withFreshTokens,
 } from '@aula-mcp/aula-auth';
-import { AulaClient, WidgetTokenManager } from '@aula-mcp/aula-client';
+import {
+  AulaClient,
+  EasyIqClient,
+  MeebookClient,
+  MinUddannelseClient,
+  SystematicClient,
+  WidgetTokenManager,
+} from '@aula-mcp/aula-client';
 
 export interface AulaContextOptions {
   store?: TokenStore;
@@ -53,6 +60,22 @@ export class AulaContext {
         new WidgetTokenManager({ client: await this.getClient() }))();
     }
     return this.widgetManagerPromise;
+  }
+
+  async getEasyIq(): Promise<EasyIqClient> {
+    return new EasyIqClient({ http: this.http, widgets: await this.getWidgetManager() });
+  }
+
+  async getMeebook(): Promise<MeebookClient> {
+    return new MeebookClient({ http: this.http, widgets: await this.getWidgetManager() });
+  }
+
+  async getMinUddannelse(): Promise<MinUddannelseClient> {
+    return new MinUddannelseClient({ http: this.http, widgets: await this.getWidgetManager() });
+  }
+
+  async getSystematic(): Promise<SystematicClient> {
+    return new SystematicClient({ http: this.http, widgets: await this.getWidgetManager() });
   }
 
   /** The currently-loaded record (after first getClient()). */

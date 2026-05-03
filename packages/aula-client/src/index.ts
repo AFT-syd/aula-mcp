@@ -29,6 +29,21 @@ export {
   AulaStepUpRequiredError,
 } from './errors.ts';
 export {
+  EasyIqClient,
+  type EasyIqOptions,
+  type IntegrationContext,
+  type IntegrationPluginInfo,
+  isoWeekString,
+  MeebookClient,
+  type MeebookOptions,
+  MinUddannelseClient,
+  type MinUddannelseOptions,
+  type NormalisedWeekPlan,
+  type NormalisedWeekPlanItem,
+  SystematicClient,
+  type SystematicOptions,
+} from './integrations/index.ts';
+export {
   isWidgetTokenExpiredResponse,
   type WidgetExpiredSignal,
   WidgetTokenManager,

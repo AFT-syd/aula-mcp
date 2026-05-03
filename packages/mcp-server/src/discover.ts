@@ -114,6 +114,27 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
         summary: 'Aula messaging threads. Sensitive threads require MitID step-up.',
         tools: ['aula.messages.list_threads', 'aula.messages.get_thread'],
       },
+      ugeplan: {
+        summary:
+          'Weekly plans from third-party vendors. Different schools use different ' +
+          'providers — try EasyIQ first (most common), fall back to Meebook.',
+        tools: ['aula.ugeplan.easyiq', 'aula.ugeplan.meebook'],
+        notes:
+          'Per-school provider detection is not wired yet — the agent should try in the ' +
+          'order listed and surface whichever returns non-empty.',
+      },
+      opgaver: {
+        summary: 'Homework / task list from Min Uddannelse.',
+        tools: ['aula.opgaver.minuddannelse'],
+      },
+      ugebrev: {
+        summary: 'Weekly newsletter from Min Uddannelse.',
+        tools: ['aula.ugebrev.minuddannelse'],
+      },
+      huskelisten: {
+        summary: 'Homework reminders from Systematic.',
+        tools: ['aula.huskelisten.systematic'],
+      },
     },
     rawRequestEnabled: process.env['AULA_MCP_RAW'] === '1',
   };
