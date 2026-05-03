@@ -12,6 +12,13 @@ import { AulaCookieJar } from './cookies.ts';
 import { RedirectLoopError } from './errors.ts';
 import type { Logger } from './logger.ts';
 import { silentLogger } from './logger.ts';
+import {
+  noopTracer,
+  sanitizeHeaders,
+  sanitizeRequestBody,
+  sanitizeResponseBody,
+  type WireTracer,
+} from './wire-tracer.ts';
 
 /** Default headers — replicates the Python mobile-Chrome fingerprint. */
 export const DEFAULT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
@@ -31,6 +38,10 @@ export interface AulaHttpClientOptions {
   logger?: Logger;
   /** Override default headers (merged in; lower-cased on lookup). */
   defaultHeaders?: Record<string, string>;
+  /** Wire tracer — captures sanitised request/response pairs. Defaults to
+   *  noop. The CLI's `aula debug login` swaps in an InMemoryTracer or
+   *  JsonlFileTracer to make failures diagnosable. */
+  tracer?: WireTracer;
 }
 
 export interface RequestOptions {
@@ -65,12 +76,15 @@ export interface FollowResult {
 
 export class AulaHttpClient {
   readonly jar: AulaCookieJar;
+  readonly tracer: WireTracer;
   private readonly logger: Logger;
   private readonly defaultHeaders: Record<string, string>;
+  private seq = 0;
 
   constructor(options: AulaHttpClientOptions = {}) {
     this.jar = options.jar ?? new AulaCookieJar();
     this.logger = options.logger ?? silentLogger;
+    this.tracer = options.tracer ?? noopTracer;
     this.defaultHeaders = { ...DEFAULT_HEADERS, ...(options.defaultHeaders ?? {}) };
   }
 
@@ -100,9 +114,28 @@ export class AulaHttpClient {
     }
 
     this.logger.debug('http.request', { method: init.method, url });
+    const start = Date.now();
     const response = await fetch(url, init);
     await this.jar.storeFromResponse(response.headers, url);
     const body = await response.text();
+    const durationMs = Date.now() - start;
+    const seq = ++this.seq;
+    if (this.tracer !== noopTracer) {
+      const sanitisedBody = sanitizeResponseBody(body);
+      this.tracer.record({
+        ts: new Date().toISOString(),
+        seq,
+        method: init.method ?? 'GET',
+        url,
+        requestHeaders: sanitizeHeaders(headers),
+        requestBody: sanitizeRequestBody(options.body),
+        status: response.status,
+        responseHeaders: sanitizeHeaders(response.headers),
+        responseBody: sanitisedBody.text,
+        responseBodyBytes: sanitisedBody.bytes,
+        durationMs,
+      });
+    }
     return {
       status: response.status,
       headers: response.headers,

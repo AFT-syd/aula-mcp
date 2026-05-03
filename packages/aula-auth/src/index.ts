@@ -128,3 +128,25 @@ export {
   type SrpStage3Result,
 } from './srp.ts';
 export { generateState } from './state.ts';
+export {
+  EncryptedFileTokenStore,
+  type EncryptedFileTokenStoreOptions,
+  MemoryTokenStore,
+  type StoredTokenRecord,
+  type TokenStore,
+  TokenStoreError,
+  type WithFreshTokensArgs,
+  withFreshTokens,
+} from './token-store.ts';
+export {
+  CompositeTracer,
+  formatTraceText,
+  InMemoryTracer,
+  JsonlFileTracer,
+  noopTracer,
+  sanitizeHeaders,
+  sanitizeRequestBody,
+  sanitizeResponseBody,
+  type WireEntry,
+  type WireTracer,
+} from './wire-tracer.ts';
