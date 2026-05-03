@@ -13,7 +13,7 @@ export class AulaAuthError extends Error {
 }
 
 export class RedirectLoopError extends AulaAuthError {
-  override readonly name = 'RedirectLoopError';
+  override readonly name: string = 'RedirectLoopError';
   constructor(
     public readonly hops: number,
     public readonly lastUrl: string,
@@ -23,7 +23,7 @@ export class RedirectLoopError extends AulaAuthError {
 }
 
 export class HtmlParseError extends AulaAuthError {
-  override readonly name = 'HtmlParseError';
+  override readonly name: string = 'HtmlParseError';
   constructor(
     message: string,
     public readonly snippet?: string,
