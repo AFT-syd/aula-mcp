@@ -12,7 +12,9 @@ build/
 
 # tests / coverage
 coverage/
-.vitest-cache/
+
+# CLI binary build output
+apps/cli/bin/
 
 # env + secrets
 .env

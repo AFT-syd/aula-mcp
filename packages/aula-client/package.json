@@ -5,21 +5,10 @@
   "description": "Aula API client + integration plugins (EasyIQ, Meebook, Min Uddannelse, Systematic).",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc -b",
-    "dev": "tsc -b --watch",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    ".": "./src/index.ts"
   },
   "dependencies": {
     "@aula-mcp/aula-auth": "workspace:*",

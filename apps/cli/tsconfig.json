@@ -1,12 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
-    "composite": true,
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
-  },
-  "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts", "dist"],
-  "references": [{ "path": "../../packages/aula-auth" }, { "path": "../../packages/aula-client" }]
+  "include": ["src/**/*"]
 }

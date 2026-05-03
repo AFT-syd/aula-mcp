@@ -1,9 +1,5 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./packages/aula-auth" },
-    { "path": "./packages/aula-client" },
-    { "path": "./packages/mcp-server" },
-    { "path": "./apps/cli" }
-  ]
+  "extends": "./tsconfig.base.json",
+  "include": ["packages/*/src/**/*", "apps/*/src/**/*"],
+  "exclude": ["**/node_modules", "**/dist", "aula-python-reference"]
 }

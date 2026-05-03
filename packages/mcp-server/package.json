@@ -2,29 +2,20 @@
   "name": "@aula-mcp/mcp-server",
   "version": "0.0.0",
   "private": true,
-  "description": "Hono-based MCP server exposing Aula data to AI agents.",
+  "description": "Hono-based MCP server exposing Aula data to AI agents. Runs on Bun.",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc -b",
-    "dev": "tsx watch src/server.ts",
-    "start": "node dist/server.js",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts"
   },
   "dependencies": {
     "@aula-mcp/aula-client": "workspace:*",
-    "@hono/node-server": "^2.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.12.16",
     "zod": "^4.4.2"

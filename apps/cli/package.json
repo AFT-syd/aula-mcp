@@ -6,15 +6,11 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "aula": "./dist/index.js"
+    "aula": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc -b",
-    "dev": "tsx src/index.ts",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "dev": "bun src/index.ts",
+    "build:bin": "bun build --compile --outfile bin/aula src/index.ts"
   },
   "dependencies": {
     "@aula-mcp/aula-auth": "workspace:*",
