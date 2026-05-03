@@ -8,7 +8,9 @@
   "bin": {
     "aula": "./dist/index.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx src/index.ts",

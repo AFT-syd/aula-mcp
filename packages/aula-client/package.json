@@ -13,7 +13,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "dev": "tsc -b --watch",
@@ -21,6 +23,6 @@
   },
   "dependencies": {
     "@aula-mcp/aula-auth": "workspace:*",
-    "undici": "^7.1.0"
+    "undici": "^8.2.0"
   }
 }

@@ -13,14 +13,17 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "dev": "tsc -b --watch",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
-    "undici": "^7.1.0"
+    "cheerio": "^1.2.0",
+    "tough-cookie": "^6.0.1",
+    "undici": "^8.2.0"
   }
 }
