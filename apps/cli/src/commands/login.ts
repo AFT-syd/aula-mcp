@@ -1,0 +1,141 @@
+/**
+ * `aula login` — runs the full MitID login and persists tokens.
+ *
+ * Pass `--debug` to also tee a sanitised wire transcript to a JSONL file
+ * under `~/.config/aula-mcp/transcripts/`. The transcript redacts secrets
+ * (cookies, MitID auth code, SAML response, OAuth tokens, etc.) so it's
+ * safe to paste into a GitHub issue when something fails.
+ */
+
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import {
+  AulaHttpClient,
+  AulaLoginClient,
+  CompositeTracer,
+  consoleLogger,
+  formatTraceText,
+  type IdentityOption,
+  InMemoryTracer,
+  JsonlFileTracer,
+  type Logger,
+  type StoredTokenRecord,
+  silentLogger,
+  type WireTracer,
+} from '@aula-mcp/aula-auth';
+import qrcode from 'qrcode-terminal';
+import { fail, fmt, info, ok, prompt, promptSecret, rule, selectFromList, warn } from '../io.ts';
+import { defaultStore, transcriptPath } from '../store.ts';
+
+export interface LoginCommandArgs {
+  username?: string;
+  method?: 'APP' | 'CODE_TOKEN';
+  debug?: boolean;
+  /** Override the file path the wire transcript is written to. */
+  transcript?: string;
+}
+
+export async function runLogin(args: LoginCommandArgs): Promise<void> {
+  const username = args.username ?? (await prompt('MitID username:'));
+  if (!username) {
+    fail('Username is required.');
+    process.exit(1);
+  }
+  const method = args.method ?? 'APP';
+
+  // Wire tracing.
+  const memTracer = args.debug ? new InMemoryTracer() : null;
+  let fileTracer: JsonlFileTracer | null = null;
+  let transcriptFile: string | null = null;
+  if (args.debug) {
+    transcriptFile = args.transcript ?? transcriptPath();
+    await mkdir(dirname(transcriptFile), { recursive: true });
+    fileTracer = new JsonlFileTracer(transcriptFile);
+    info(`Debug mode: capturing wire transcript to ${fmt.dim(transcriptFile)}`);
+  }
+  const tracer: WireTracer | undefined =
+    memTracer && fileTracer
+      ? new CompositeTracer([memTracer, fileTracer])
+      : (memTracer ?? fileTracer ?? undefined);
+
+  const logger: Logger = args.debug ? consoleLogger('aula') : silentLogger;
+  const http = new AulaHttpClient({ logger, ...(tracer ? { tracer } : {}) });
+  const client = new AulaLoginClient({ http, logger });
+
+  let identityIndex: number | undefined;
+  let identityName: string | undefined;
+  let lastShownQrUpdate = -1;
+
+  info(`Starting MitID login for ${fmt.bold(username)} (${method})`);
+
+  let codeTokenPassword: string | undefined;
+  let promptForCodeToken: (() => Promise<string>) | undefined;
+  if (method === 'CODE_TOKEN') {
+    codeTokenPassword = await promptSecret('MitID password:');
+    promptForCodeToken = async () => prompt('6 digits from your kodeviser:');
+  }
+
+  try {
+    const tokens = await client.login({
+      username,
+      method,
+      ...(codeTokenPassword ? { password: codeTokenPassword } : {}),
+      ...(promptForCodeToken ? { promptForCodeToken } : {}),
+      selectIdentity: async (options: IdentityOption[]) => {
+        const choice = await selectFromList(
+          'Pick the identity to log in as:',
+          options.map((o) => ({ label: o.name })),
+        );
+        identityIndex = choice;
+        identityName = options.find((o) => o.index === choice)?.name;
+        return choice;
+      },
+      appCallbacks: {
+        onOtp(otp) {
+          info(`Enter this OTP in your MitID app: ${fmt.bold(otp)}`);
+        },
+        onQr(qr) {
+          if (qr.updateCount === lastShownQrUpdate) return;
+          lastShownQrUpdate = qr.updateCount;
+          info(
+            `Scan one of these QR codes with the MitID app (alternate display, refresh #${qr.updateCount}):`,
+          );
+          qrcode.generate(qr.qr1Json, { small: true });
+          qrcode.generate(qr.qr2Json, { small: true });
+        },
+        onVerified() {
+          info('Channel verified. Approve the login in your MitID app.');
+        },
+      },
+    });
+
+    const record: StoredTokenRecord = {
+      version: 1,
+      username,
+      tokens,
+      saved_at: Math.floor(Date.now() / 1000),
+      ...(identityIndex ? { identityIndex } : {}),
+      ...(identityName ? { identityName } : {}),
+    };
+    await defaultStore().save(record);
+
+    ok(`Login successful. Tokens saved to ${fmt.dim(defaultStore().path)}`);
+    info(
+      `Access token expires in ${Math.max(0, tokens.expires_at - Math.floor(Date.now() / 1000))} s`,
+    );
+  } catch (err) {
+    fail(`Login failed: ${(err as Error).message}`);
+    if (memTracer && memTracer.entries.length > 0) {
+      rule('wire transcript');
+      process.stderr.write(formatTraceText(memTracer.entries));
+      if (transcriptFile) {
+        warn(`Full transcript also written to ${transcriptFile}`);
+      }
+    } else if (transcriptFile) {
+      warn(`Full transcript written to ${transcriptFile}`);
+    } else {
+      warn('Re-run with --debug to capture a sanitised wire transcript.');
+    }
+    process.exit(1);
+  }
+}

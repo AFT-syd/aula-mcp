@@ -17,8 +17,8 @@ describe('sanitizeHeaders', () => {
       'csrfp-token': 'TOKEN',
       'user-agent': 'Mozilla',
     });
-    expect(out['cookie']).toMatch(/^<redacted/);
-    expect(out['authorization']).toMatch(/^<redacted/);
+    expect(out.cookie).toMatch(/^<redacted/);
+    expect(out.authorization).toMatch(/^<redacted/);
     expect(out['aula-authorization']).toMatch(/^<redacted/);
     expect(out['csrfp-token']).toMatch(/^<redacted/);
     expect(out['user-agent']).toBe('Mozilla');
@@ -29,7 +29,7 @@ describe('sanitizeHeaders', () => {
     h.set('Cookie', 'val');
     h.set('X-Custom', 'ok');
     const out = sanitizeHeaders(h);
-    expect(out['cookie']).toMatch(/^<redacted/);
+    expect(out.cookie).toMatch(/^<redacted/);
     expect(out['x-custom']).toBe('ok');
   });
 });
@@ -59,10 +59,10 @@ describe('sanitizeRequestBody', () => {
     const out = sanitizeRequestBody(json);
     if (out == null) throw new Error('expected non-null');
     const parsed = JSON.parse(out) as Record<string, unknown>;
-    expect(parsed['randomA']).toContain('redacted');
-    expect(parsed['m1']).toContain('redacted');
-    expect(parsed['flowValueProof']).toContain('redacted');
-    expect(parsed['keep_me']).toBe('fine');
+    expect(parsed.randomA).toContain('redacted');
+    expect(parsed.m1).toContain('redacted');
+    expect(parsed.flowValueProof).toContain('redacted');
+    expect(parsed.keep_me).toBe('fine');
   });
 
   test('binary body is summarised as length only', () => {
@@ -88,9 +88,9 @@ describe('sanitizeResponseBody', () => {
     const body = JSON.stringify({ access_token: 'AAA', refresh_token: 'RRR', expires_in: 60 });
     const out = sanitizeResponseBody(body);
     const parsed = JSON.parse(out.text) as Record<string, unknown>;
-    expect(parsed['access_token']).toContain('redacted');
-    expect(parsed['refresh_token']).toContain('redacted');
-    expect(parsed['expires_in']).toBe(60);
+    expect(parsed.access_token).toContain('redacted');
+    expect(parsed.refresh_token).toContain('redacted');
+    expect(parsed.expires_in).toBe(60);
   });
 });
 
