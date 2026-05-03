@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/aula-auth" },
+    { "path": "./packages/aula-client" },
+    { "path": "./packages/mcp-server" },
+    { "path": "./apps/cli" }
+  ]
+}

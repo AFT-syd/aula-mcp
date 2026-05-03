@@ -1,0 +1,26 @@
+{
+  "name": "@aula-mcp/aula-auth",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MitID + SRP + OAuth/SAML auth flow for Aula. Pure HTTP, no headless browser.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "undici": "^7.1.0"
+  }
+}

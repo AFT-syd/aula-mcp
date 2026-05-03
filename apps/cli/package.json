@@ -1,0 +1,21 @@
+{
+  "name": "@aula-mcp/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Command-line entry point for aula-mcp: login, status, logout.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "aula": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx src/index.ts",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@aula-mcp/aula-auth": "workspace:*",
+    "@aula-mcp/aula-client": "workspace:*"
+  }
+}

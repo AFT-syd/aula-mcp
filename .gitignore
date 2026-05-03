@@ -1,0 +1,32 @@
+# reference repo we cloned for porting — not part of this project
+aula-python-reference/
+
+# deps
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# tests / coverage
+coverage/
+.vitest-cache/
+
+# env + secrets
+.env
+.env.*
+!.env.example
+
+# token store + local state
+.aula/
+tokens.json
+*.tokens.json
+
+# editor + os
+.DS_Store
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.log
