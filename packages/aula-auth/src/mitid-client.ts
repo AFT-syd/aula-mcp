@@ -770,6 +770,25 @@ export class MitidClient {
     if (!err) return;
     const text =
       err.userMessage?.text?.text ?? err.message ?? err.errorCode ?? 'unknown MitID error';
+    const supportId = (err.userMessage as { supportErrorId?: string } | undefined)?.supportErrorId;
+
+    // CAP008 — MitID's parallel-sessions detector ("user ID in two places at
+    // the same time"). Comes through as control.authenticator_cannot_be_started
+    // with this specific supportErrorId. Surfaces as a dedicated typed error
+    // so the CLI can show a friendly "wait 60 s, close other tabs" hint.
+    if (
+      supportId === 'CAP008' ||
+      /two places at the same time/i.test(text) ||
+      /parallel/i.test(text)
+    ) {
+      throw new MitidParallelSessionError(
+        'MitID detected a parallel session: your account is in use elsewhere ' +
+          '(another browser tab logging into Aula, a previous failed login that ' +
+          "didn't fully tear down, etc.). Wait ~60 seconds, close other Aula " +
+          'tabs / sessions, then retry.',
+      );
+    }
+
     // Specific error code → typed subclass so callers can branch on it.
     if (err.errorCode === 'control.authenticator_cannot_be_started') {
       throw new MitidAuthenticatorUnavailableError(text);

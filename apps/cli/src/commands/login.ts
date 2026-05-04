@@ -138,15 +138,28 @@ export async function runLogin(args: LoginCommandArgs): Promise<void> {
       // Don't let log-append failures clobber a successful login.
     });
   } catch (err) {
-    fail(`Login failed: ${(err as Error).message}`);
+    const error = err as Error;
+    fail(`Login failed: ${error.message}`);
     await appendLoginLog({
       ts: new Date().toISOString(),
       username,
       method,
       success: false,
-      errorKind: (err as Error).name ?? 'Error',
-      errorMessage: (err as Error).message,
+      errorKind: error.name ?? 'Error',
+      errorMessage: error.message,
     }).catch(() => {});
+
+    // Friendly hint for the most common transient failure: MitID's
+    // parallel-session detector. Doesn't help to dump a transcript here —
+    // the user just needs to wait + retry.
+    if (error.name === 'MitidParallelSessionError' || /parallel/i.test(error.message)) {
+      info(`${fmt.bold('Hint:')} this is MitID's "parallel sessions" detector.`);
+      info('  Close any open Aula browser tabs, dismiss any pending MitID-app prompts,');
+      info('  and wait ~60 seconds before retrying.');
+      info(`History: ${fmt.dim('aula log --last 5')}`);
+      process.exit(1);
+    }
+
     if (memTracer && memTracer.entries.length > 0) {
       rule('wire transcript');
       process.stderr.write(formatTraceText(memTracer.entries));
@@ -158,6 +171,7 @@ export async function runLogin(args: LoginCommandArgs): Promise<void> {
     } else {
       warn('Re-run with --debug to capture a sanitised wire transcript.');
     }
+    info(`History: ${fmt.dim('aula log --last 5')}`);
     process.exit(1);
   }
 }
