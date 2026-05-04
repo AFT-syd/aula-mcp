@@ -5,15 +5,21 @@
  *
  * Usage:
  *   aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug] [--transcript <file>]
- *   aula status
+ *   aula status [--json]
+ *   aula whoami [--json]
+ *   aula doctor [--json] [--verbose]
+ *   aula transcript view <file> [--json]
+ *   aula transcript list [--json]
+ *   aula transcript prune [--keep N] [--dry-run]
  *   aula logout
- *   aula whoami
  *   aula --help
  */
 
+import { runDoctor } from './commands/doctor.ts';
 import { runLogin } from './commands/login.ts';
 import { runLogout } from './commands/logout.ts';
 import { runStatus } from './commands/status.ts';
+import { runTranscriptList, runTranscriptPrune, runTranscriptView } from './commands/transcript.ts';
 import { runWhoami } from './commands/whoami.ts';
 import { fmt } from './io.ts';
 
@@ -55,8 +61,12 @@ const HELP = `${fmt.bold('aula')} — MCP-friendly Aula client
 
 ${fmt.bold('Usage')}:
   aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug] [--transcript <file>]
-  aula status
-  aula whoami
+  aula status [--json]
+  aula whoami [--json]
+  aula doctor [--json] [--verbose]
+  aula transcript list [--json]
+  aula transcript view <file> [--json]
+  aula transcript prune [--keep N] [--dry-run]
   aula logout
   aula --help
 
@@ -66,6 +76,8 @@ ${fmt.bold('Notes')}:
     auto-generated key file.
   • --debug captures a sanitised wire transcript to JSONL — safe to share
     when reporting issues.
+  • aula doctor walks every read endpoint and reports per-call status. The
+    fastest way to know whether the whole pipeline is alive.
 `;
 
 async function main(): Promise<void> {
@@ -90,13 +102,50 @@ async function main(): Promise<void> {
       break;
     }
     case 'status':
-      await runStatus();
-      break;
-    case 'logout':
-      await runLogout();
+      await runStatus({ json: args.flags.json === true });
       break;
     case 'whoami':
-      await runWhoami();
+      await runWhoami({ json: args.flags.json === true });
+      break;
+    case 'doctor':
+      await runDoctor({
+        json: args.flags.json === true,
+        verbose: args.flags.verbose === true,
+      });
+      break;
+    case 'transcript': {
+      const sub = args.positional[0];
+      switch (sub) {
+        case 'view': {
+          const file = args.positional[1];
+          if (!file) {
+            process.stderr.write('Usage: aula transcript view <file>\n');
+            process.exit(2);
+          }
+          await runTranscriptView({ file, json: args.flags.json === true });
+          break;
+        }
+        case 'list':
+          await runTranscriptList({ json: args.flags.json === true });
+          break;
+        case 'prune': {
+          const keepRaw = args.flags.keep;
+          const keep = typeof keepRaw === 'string' ? Number.parseInt(keepRaw, 10) : undefined;
+          await runTranscriptPrune({
+            ...(typeof keep === 'number' && Number.isFinite(keep) ? { keep } : {}),
+            ...(args.flags['dry-run'] === true ? { dryRun: true } : {}),
+          });
+          break;
+        }
+        default:
+          process.stderr.write(`Unknown transcript subcommand: ${sub ?? '<missing>'}\n`);
+          process.stderr.write('Try: aula transcript {list|view <file>|prune}\n');
+          process.exit(2);
+      }
+      break;
+    }
+    case 'logout':
+      await runLogout();
       break;
     case 'help':
     case '--help':

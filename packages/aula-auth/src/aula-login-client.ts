@@ -15,7 +15,6 @@
  * Returns AulaTokens on success. Throws typed errors otherwise.
  */
 
-import { Buffer } from 'node:buffer';
 import {
   type AulaOAuthConfig,
   type AulaTokens,
@@ -495,5 +494,3 @@ export class AulaLoginClient {
     throw new AulaLoginError('Aula ACS chain exceeded 10 hops');
   }
 }
-
-void Buffer;

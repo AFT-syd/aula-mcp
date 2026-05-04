@@ -14,7 +14,6 @@
 
 import { Buffer } from 'node:buffer';
 import { sha256 } from './crypto.ts';
-import { base64url } from './encoding.ts';
 import { AulaAuthError } from './errors.ts';
 import type { AulaHttpClient } from './http.ts';
 import type { Logger } from './logger.ts';
@@ -651,6 +650,3 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
-
-// Marker exports so tree-shaking doesn't drop us if only types are used downstream.
-void base64url;

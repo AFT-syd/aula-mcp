@@ -51,9 +51,10 @@ function addDays(d: Date, n: number): Date {
 
 /** Midnight of the given calendar day in Europe/Copenhagen, as a UTC instant. */
 function startOfDayCopenhagen(d: Date): Date {
-  // Format the date in Copenhagen, then parse back as UTC midnight of that
-  // local day. Good enough for the schedule windows the calendar API takes.
-  const fmt = new Intl.DateTimeFormat('en-CA', {
+  // Locale only affects the *default* formatting; we read numeric parts via
+  // formatToParts so it's a no-op behaviour-wise. da-DK is chosen for
+  // readability since this is a Danish-domain app.
+  const fmt = new Intl.DateTimeFormat('da-DK', {
     timeZone: 'Europe/Copenhagen',
     year: 'numeric',
     month: '2-digit',
@@ -75,7 +76,10 @@ function startOfWeekMondayCopenhagen(d: Date): Date {
 
 /** Format `YYYY-MM-DD HH:MM:SS.0000+ZZZZ` in Europe/Copenhagen. */
 function aulaTs(d: Date): string {
-  const fmt = new Intl.DateTimeFormat('sv-SE', {
+  // Same as above: the `da-DK` locale is purely for readability — we read
+  // the numeric `year`/`month`/`day`/`hour`/`minute`/`second` parts via
+  // formatToParts and assemble the ISO-ish string ourselves.
+  const fmt = new Intl.DateTimeFormat('da-DK', {
     timeZone: 'Europe/Copenhagen',
     year: 'numeric',
     month: '2-digit',
