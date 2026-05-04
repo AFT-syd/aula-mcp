@@ -11,16 +11,16 @@ TypeScript port of [`scaarup/aula`](https://github.com/scaarup/aula). Owns its o
 
 ## Status
 
-**v0.1 in progress** — auth + core API + integration plugins + MCP server are all built and unit-tested. Live MitID flow verification is the gating step for `v0.1.0`.
+**v0.1 — works end-to-end on live Aula.** MitID login (APP method, QR), token refresh, the full Aula read API, the `aula.discover` MCP manifest, and live ugeplan retrieval (EasyIQ SkolePortal verified) are all running against production Aula traffic.
 
 | Layer | What it does | Status |
 | ----- | ------------ | ------ |
-| `@aula-mcp/aula-auth` | MitID (APP / CODE_TOKEN / PASSWORD) + custom 3072-bit SRP-6a + OAuth/SAML chain + token store (file or macOS Keychain) + wire-trace debug + legacy MitID `/prove`+`/verify` fallback | ✅ unit-tested |
+| `@aula-mcp/aula-auth` | MitID (APP / CODE_TOKEN / PASSWORD) + custom 3072-bit SRP-6a + OAuth/SAML chain + token store (file or macOS Keychain) + wire-trace debug | ✅ unit-tested + live-verified |
 | `@aula-mcp/aula-client` | Aula API (profiles, presence, calendar, messages, notifications, posts) with version probing + widget token manager (#311 fix) + integration plugins (EasyIQ, EasyIQ SkolePortal, Meebook, Min Uddannelse, Systematic) | ✅ unit-tested |
-| `@aula-mcp/mcp-server` | Hono + `@modelcontextprotocol/sdk` (`WebStandardStreamableHTTPServerTransport`) + `aula.discover` (with per-school provider auto-detection) + 11 capability tools + raw-request escape hatch | ✅ unit-tested |
+| `@aula-mcp/mcp-server` | Hono + `@modelcontextprotocol/sdk` (`WebStandardStreamableHTTPServerTransport`) + `aula.discover` (with per-school provider auto-detection + `usage` hints for the agent) + 11 capability tools + raw-request escape hatch | ✅ unit-tested + live-verified with Claude Code |
 | `apps/cli` | `aula login / status / whoami / doctor / log / transcript / logout`, MitID QR rendering, `--debug` wire-transcript capture | ✅ unit-tested |
 
-**203 passing tests · CI green · daily MitID drift canary running.**
+**209 passing tests · CI green · daily MitID drift canary running.**
 
 ## Quickstart
 
@@ -46,11 +46,41 @@ pnpm --filter @aula-mcp/mcp-server dev
 
 Then point any MCP client at `http://127.0.0.1:7878/mcp`. See [`examples/claude-config/`](./examples/claude-config/) for a Claude Code / Claude Desktop snippet.
 
+### Connecting to Claude Code
+
+```sh
+# 1. Start the server (leave running)
+bun packages/mcp-server/src/server.ts
+
+# 2. Register it with Claude Code (one-time)
+claude mcp add --transport http aula http://127.0.0.1:7878/mcp
+
+# 3. In any Claude Code session
+/mcp                # confirm `aula` shows as connected
+```
+
+Then prompt naturally — kids' names get fuzzy-matched against the discover manifest, no IDs needed:
+
+> hvad står der på ugeplanen næste uge for theo
+
+Claude calls `aula.discover` once, picks the right ugeplan vendor for your school from `detectedWidgets`, and answers in your language with Danish-formatted dates.
+
+### Connecting to claude.ai (web)
+
+The web UI requires a public HTTPS URL — `127.0.0.1` won't work, the connection happens server-side from Anthropic's cloud. For a temporary tunnel:
+
+```sh
+cloudflared tunnel --url http://127.0.0.1:7878
+# → use the printed https://…trycloudflare.com URL + /mcp
+```
+
+⚠️ The tunnel URL is publicly reachable while running — anyone who guesses it controls your Aula tokens. Fine for a quick test, don't leave it up. For permanent setup, deploy the server to a real host behind your own auth (Caddy / authenticated reverse proxy).
+
 ## CLI reference
 
 ```
 aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug]
-           [--transcript <file>] [--legacy-app-flow]
+           [--transcript <file>]
 aula status [--json]
 aula whoami [--json]
 aula doctor [--json] [--verbose]
@@ -64,7 +94,7 @@ aula --help
 
 | Command | What it does |
 | ------- | ------------ |
-| `aula login` | Walks the full MitID flow (APP method by default — scans QR with the MitID app). Saves tokens. `--debug` captures a sanitised wire transcript so failures are diagnosable. `--legacy-app-flow` switches to MitID's older `/prove + /verify` dance (insurance only). |
+| `aula login` | Walks the full MitID flow (APP method by default — scans QR with the MitID app). Saves tokens. `--debug` captures a sanitised wire transcript so failures are diagnosable. |
 | `aula status` | Prints token presence, expiry, and active identity. Doesn't hit the network. Exit code 1 when no tokens. |
 | `aula whoami` | Loads tokens (refreshes if needed), calls `getProfilesByLogin` + `getProfileContext`. Smoke test that the auth + client pipeline works end-to-end. |
 | `aula doctor` | Walks every read endpoint (profiles, profile context, presence, messages, notifications, posts, widget token issuance) and reports per-call status with timing. The fastest "is this thing actually working?" check. `--verbose` dumps the wire transcript inline on failure. |
@@ -82,6 +112,15 @@ aula --help
 ### Wire transcripts
 
 `--debug` mode tees a JSONL transcript of every HTTP request/response to `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl`. Cookies, OAuth/SAML payloads, MitID auth codes, passwords, M1, flowValueProof, the `access_token` query param, and other secret fields are all redacted (`<redacted N chars>`). The transcript is safe to paste into a GitHub issue.
+
+## Demo
+
+A walkthrough of `aula --help` and what `aula.discover` returns:
+
+![aula --help](./docs/demos/help.gif)
+![discover manifest](./docs/demos/discover.gif)
+
+Recordings are made with [VHS](https://github.com/charmbracelet/vhs) — see [`docs/demos/`](./docs/demos/) for the tapes and the recipe to add more.
 
 ## The `aula.discover` tool
 
@@ -158,7 +197,7 @@ The Python integration has years of accumulated lessons in its issue tracker. We
 | `aula login` hangs after username prompt | The MitID app hasn't been opened yet, or the QR codes haven't rendered (terminal too narrow). Make sure your terminal is ≥ 80 cols. |
 | `Login failed: MitID initialize failed (status …)` | nemlog-in.mitid.dk is unreachable or returned an error. Re-run with `--debug` and inspect the transcript. |
 | `Login failed: APP poll error: …` | The MitID app rejected or cancelled. Check that the MitID app is logged into your account. |
-| `Login failed: appComplete failed (status 4xx)` | Unusual — usually a server-side rollback to the legacy `/prove + /verify` path. Re-run with `--legacy-app-flow`. |
+| `Login failed: appProve failed (status …)` | Rare — MitID rejected the SRP proof. Re-run with `--debug` and inspect `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl`. |
 | `aula whoami` → `step_up_required` for messages | A specific thread is sensitive (Aula returns 403). Re-run `aula login` to re-establish a step-up session, then retry. |
 | `aula doctor` says `Aula API v22 → 410` | The API version has bumped. Run `aula doctor` again — `AulaClient` will probe forward and remember. |
 | `aula status` shows `expired N min ago` | Tokens expired since last use. Any read call (or `aula doctor`) will refresh them automatically. |
@@ -173,7 +212,7 @@ pnpm install          # install everything
 pnpm typecheck        # tsc -p tsconfig.json --noEmit
 pnpm lint             # biome check .
 pnpm lint:fix         # biome check --write .
-bun test              # run the bun:test suites (203 cases at last count)
+bun test              # run the bun:test suites (209 cases at last count)
 bun test --coverage   # also produces a coverage table
 ```
 

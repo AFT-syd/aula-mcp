@@ -1,0 +1,63 @@
+{
+  "user": {
+    "name": "Eksempelbruger",
+    "username": "eksempel",
+    "identityName": "Eksempel Bruger Forælder"
+  },
+  "children": [
+    {
+      "id": 1000001,
+      "name": "Lukas Eksempel",
+      "userId": "luka1234",
+      "institution": {
+        "id": 9001,
+        "name": "Eksempelskolen",
+        "code": "G99001"
+      }
+    },
+    {
+      "id": 1000002,
+      "name": "Maja Eksempel",
+      "userId": "maja5678",
+      "institution": {
+        "id": 9002,
+        "name": "Eksempel Børnehus",
+        "code": "G99002"
+      }
+    }
+  ],
+  "apiVersion": 23,
+  "tokens": { "expires_at": 1777931901, "seconds_remaining": 3540 },
+  "detectedWidgets": ["0001", "0029", "0030", "0062"],
+  "capabilities": {
+    "presence": { "summary": "Daily presence per child.", "tools": ["aula.presence.today"] },
+    "calendar": { "summary": "School-schedule lessons.", "tools": ["aula.calendar.events"] },
+    "messages": {
+      "summary": "Aula messaging threads.",
+      "tools": ["aula.messages.list_threads", "aula.messages.get_thread"]
+    },
+    "notifications": { "summary": "Activity badge counts.", "tools": ["aula.notifications.list"] },
+    "posts": { "summary": "Class news / posts.", "tools": ["aula.posts.list"] },
+    "ugeplan": {
+      "summary": "Weekly plans. Detected provider: easyiq.",
+      "tools": ["aula.ugeplan.easyiq"]
+    },
+    "opgaver": {
+      "summary": "Homework from Min Uddannelse.",
+      "tools": ["aula.opgaver.minuddannelse"]
+    },
+    "ugebrev": { "summary": "Weekly newsletter.", "tools": ["aula.ugebrev.minuddannelse"] },
+    "huskelisten": {
+      "summary": "Reminders from Systematic.",
+      "tools": ["aula.huskelisten.systematic"]
+    }
+  },
+  "rawRequestEnabled": false,
+  "usage": {
+    "cache": "Reuse this manifest for the rest of the session.",
+    "nameResolution": "Match kid names from the user prompt against children[].name (case-insensitive, partial). Use child.id for childIds, child.userId for profileIds.",
+    "pickOne": "For each capability, call only tools[0] — that is the provider this user has.",
+    "timeWindows": "denne uge → this_week, næste uge → next_week, i dag → today, i morgen → tomorrow.",
+    "language": "Reply in the user's language."
+  }
+}
