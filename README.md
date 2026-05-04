@@ -115,12 +115,24 @@ aula --help
 
 ## Demo
 
-A walkthrough of `aula --help` and what `aula.discover` returns:
+Asking Claude Code about next week's school plan — one prompt, one MCP server, real Aula data:
+
+![Claude Code session](./docs/demos/claude-code.gif)
+
+Behind the scenes, the CLI ships a `doctor` that walks every Aula endpoint:
+
+![aula doctor](./docs/demos/doctor.gif)
+
+`whoami` shows the active identity + which children are tied to it:
+
+![aula whoami](./docs/demos/whoami.gif)
+
+Full CLI help and the shape of the `aula.discover` manifest:
 
 ![aula --help](./docs/demos/help.gif)
 ![discover manifest](./docs/demos/discover.gif)
 
-Recordings are made with [VHS](https://github.com/charmbracelet/vhs) — see [`docs/demos/`](./docs/demos/) for the tapes and the recipe to add more.
+Recordings are made with [VHS](https://github.com/charmbracelet/vhs); the children's names + institution codes shown above are synthetic. See [`docs/demos/`](./docs/demos/) for the tapes and the PII rules.
 
 ## The `aula.discover` tool
 

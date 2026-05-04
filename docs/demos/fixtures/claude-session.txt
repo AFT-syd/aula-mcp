@@ -1,0 +1,29 @@
+❯ hvad står der på ugeplanen næste uge for maja
+
+⏺ Calls: aula.discover, aula.ugeplan.easyiq_skoleportal (childIds: [1000002])
+
+⏺ Næste uge (uge 19) for Maja på Eksempelskolen:
+
+  Mandag 4. maj
+    08:00–08:45  Matematik (4D)
+                 Decimaltal: vi arbejder videre med side 85.
+    08:45–09:30  Engelsk (4D)
+                 Tegneserier på Pixton — eleverne fortsætter
+                 deres egne projekter.
+
+  Tirsdag 5. maj
+    09:00–11:00  Idræt (4D)
+                 Boldspil ude. Husk skiftetøj.
+    11:30–12:15  Dansk (4D)
+                 Læsestrategier — vi læser kapitel 7 i
+                 "Mio min Mio" højt sammen.
+
+  Onsdag 6. maj
+    08:00–09:30  N/T (4D)
+                 Forsøg med vand og olie.
+
+  Torsdag 7. maj
+    Fri (Kristi Himmelfartsdag)
+
+  Fredag 8. maj
+    Skolefri (forlænget weekend)

@@ -1,0 +1,5 @@
+✓ Logged in as casperjuel — Aula API v23
+• Active identity: Casper Juel Jensen
+• Guardian user-id (used by integrations): casp531j
+•   Child: Lukas Eksempel (id 1000001) at Eksempel Børnehus [G99001]
+•   Child: Maja Eksempel (id 1000002) at Eksempelskolen [G99002]

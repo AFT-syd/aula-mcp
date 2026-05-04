@@ -1,0 +1,13 @@
+─────────────────────────────────────────────── aula doctor
+  [PASS] tokens                                         Loaded for casperjuel (expires in 60 min)
+  [PASS] profiles.getProfilesByLogin                    1 profile(s), 2 child(ren) (356 ms)
+  [PASS] profiles.getProfileContext                     userId=casp531j, widgets=[0019,0047,0051,0108,0128,0142] (204 ms)
+  [PASS] collect child IDs                              2 child id(s) collected (110 ms)
+  [PASS] presence.getDailyOverview                      1 entry/entries (104 ms)
+  [PASS] messaging.getThreads                           20 thread(s), 0 unread (502 ms)
+  [PASS] notifications.getNotificationsForActiveProfile received (object; 68928 chars) (698 ms)
+  [PASS] posts.getAllPosts                              received (object; 87 chars) (325 ms)
+  [PASS] aulaToken.getAulaToken (widget 0128 / SkolePortal) widget token issued (812 chars) (148 ms)
+
+─────────────────────────────────────────────────── summary
+✓ All 9 checks passed.
