@@ -13,6 +13,7 @@ import {
   AulaHttpClient,
   EncryptedFileTokenStore,
   isTokenExpired,
+  KeychainTokenStore,
   type Logger,
   type StoredTokenRecord,
   silentLogger,
@@ -44,10 +45,12 @@ export class AulaContext {
   private clientPromise: Promise<AulaClient> | undefined;
   private widgetManagerPromise: Promise<WidgetTokenManager> | undefined;
   private cachedRecord: StoredTokenRecord | undefined;
-  /** Numeric guardian user-id from getProfileContext. Used as the
+  /** Guardian user-id from getProfileContext. Used as the
    *  sessionId/sessionUUID/sessionuuid parameter by the third-party
-   *  integrations. */
-  private cachedGuardianUserId: number | undefined;
+   *  integrations. Stored as string — Aula returns either a numeric id
+   *  or an opaque alphanumeric token; we treat it as opaque to match
+   *  upstream Python's `str(child["userId"])` handling. */
+  private cachedGuardianUserId: string | undefined;
 
   constructor(options: AulaContextOptions = {}) {
     this.store = options.store ?? defaultStore();
@@ -92,21 +95,23 @@ export class AulaContext {
   }
 
   /**
-   * Numeric guardian user-id (from `profiles.getProfileContext.data.userId`).
+   * Guardian user-id (from `profiles.getProfileContext.data.userId`).
    * Required as the `sessionId` / `sessionUUID` / `sessionuuid` parameter for
    * EasyIQ, Min Uddannelse, and Meebook. Cached after the first call.
    *
    * Per Python `client.py:670/757` — the integration calls fail without it.
+   * Aula returns this as either a number or an opaque alphanumeric token;
+   * we coerce to string and pass through verbatim.
    */
-  async getGuardianUserId(): Promise<number> {
+  async getGuardianUserId(): Promise<string> {
     if (this.cachedGuardianUserId !== undefined) return this.cachedGuardianUserId;
     const client = await this.getClient();
     const ctx = await client.getProfileContext('guardian');
-    if (typeof ctx.userId !== 'number') {
-      throw new Error('profiles.getProfileContext returned no numeric userId');
+    if (ctx.userId == null || ctx.userId === '') {
+      throw new Error('profiles.getProfileContext returned no userId');
     }
-    this.cachedGuardianUserId = ctx.userId;
-    return ctx.userId;
+    this.cachedGuardianUserId = String(ctx.userId);
+    return this.cachedGuardianUserId;
   }
 
   async getWidgetManager(): Promise<WidgetTokenManager> {
@@ -156,7 +161,17 @@ export class AulaContext {
   }
 }
 
+/**
+ * Mirror the CLI's backend selection (apps/cli/src/store.ts) so the server
+ * reads from the same place `aula login` writes to:
+ *   1. AULA_MCP_NO_KEYCHAIN=1 → file backend regardless of platform.
+ *   2. macOS + `security` available → KeychainTokenStore.
+ *   3. Everything else → EncryptedFileTokenStore at AULA_MCP_DIR.
+ */
 function defaultStore(): TokenStore {
+  if (KeychainTokenStore.isSupported() && process.env.AULA_MCP_NO_KEYCHAIN !== '1') {
+    return new KeychainTokenStore();
+  }
   const dir = process.env.AULA_MCP_DIR ?? join(homedir(), '.config', 'aula-mcp');
   return new EncryptedFileTokenStore({
     filePath: join(dir, 'tokens.json'),

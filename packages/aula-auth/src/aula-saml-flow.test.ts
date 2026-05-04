@@ -47,22 +47,33 @@ describe('parseMitidVerificationToken', () => {
 });
 
 describe('extractSamlForm', () => {
-  test('returns SAMLResponse + RelayState', () => {
+  test('returns SAMLResponse + RelayState + form action', () => {
     const html = `
-      <form>
+      <form action="https://login.aula.dk/sp/acs/app-level3-sp">
         <input name="SAMLResponse" value="SAML"/>
         <input name="RelayState" value="STATE"/>
       </form>`;
     const out = extractSamlForm(html);
-    expect(out).toEqual({ samlResponse: 'SAML', relayState: 'STATE', hadRelayState: true });
+    expect(out).toEqual({
+      samlResponse: 'SAML',
+      relayState: 'STATE',
+      hadRelayState: true,
+      action: 'https://login.aula.dk/sp/acs/app-level3-sp',
+    });
   });
 
   test('tolerates missing RelayState (issue #310)', () => {
-    const html = `<form><input name="SAMLResponse" value="SAML"/></form>`;
+    const html = `<form action="/acs"><input name="SAMLResponse" value="SAML"/></form>`;
     const out = extractSamlForm(html);
     expect(out.samlResponse).toBe('SAML');
     expect(out.relayState).toBe('');
     expect(out.hadRelayState).toBe(false);
+    expect(out.action).toBe('/acs');
+  });
+
+  test('returns empty action when the form has none', () => {
+    const html = `<form><input name="SAMLResponse" value="SAML"/></form>`;
+    expect(extractSamlForm(html).action).toBe('');
   });
 
   test('throws when SAMLResponse is missing', () => {

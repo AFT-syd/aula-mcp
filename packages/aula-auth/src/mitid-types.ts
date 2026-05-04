@@ -88,11 +88,6 @@ export interface SrpInitResponse {
   randomB: { value: string };
 }
 
-/** Response from `POST /complete` (APP). */
-export interface AppCompleteResponse {
-  authenticationSessionId: string;
-}
-
 /** Response from `PUT /finalization`. */
 export interface FinalizationResponse {
   authorizationCode: string;

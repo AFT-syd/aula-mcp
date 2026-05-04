@@ -34,9 +34,6 @@ export interface LoginCommandArgs {
   debug?: boolean;
   /** Override the file path the wire transcript is written to. */
   transcript?: string;
-  /** Use the legacy MitID `/prove + /verify` flow instead of `/complete`.
-   *  Only set if `/complete` is rejected by the server in the wild. */
-  legacyAppFlow?: boolean;
 }
 
 export async function runLogin(args: LoginCommandArgs): Promise<void> {
@@ -85,7 +82,6 @@ export async function runLogin(args: LoginCommandArgs): Promise<void> {
       method,
       ...(codeTokenPassword ? { password: codeTokenPassword } : {}),
       ...(promptForCodeToken ? { promptForCodeToken } : {}),
-      ...(args.legacyAppFlow ? { useLegacyAppFlow: true } : {}),
       selectIdentity: async (options: IdentityOption[]) => {
         const choice = await selectFromList(
           'Pick the identity to log in as:',

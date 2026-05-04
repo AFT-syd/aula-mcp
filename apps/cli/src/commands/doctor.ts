@@ -66,13 +66,16 @@ export async function runDoctor(args: DoctorCommandArgs = {}): Promise<void> {
     return `${data.profiles?.length ?? 0} profile(s), ${childCount} child(ren)`;
   });
 
-  let guardianUserId: number | null = null;
+  let guardianUserId: string | null = null;
   let childIds: number[] = [];
 
   await runCheck(checks, 'profiles.getProfileContext', async () => {
     const data = await client.getProfileContext('guardian');
-    guardianUserId = data.userId ?? null;
-    return `userId=${guardianUserId ?? 'missing'}, ${data.pageConfiguration?.widgetConfigurations?.length ?? 0} widget(s)`;
+    guardianUserId = data.userId == null ? null : String(data.userId);
+    const widgetIds = (data.pageConfiguration?.widgetConfigurations ?? [])
+      .map((w) => w.widget?.widgetId ?? w.widgetId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    return `userId=${guardianUserId ?? 'missing'}, widgets=[${widgetIds.join(',') || 'none'}]`;
   });
 
   await runCheck(checks, 'collect child IDs', async () => {

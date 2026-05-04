@@ -29,7 +29,7 @@ const HELP = `${fmt.bold('aula')} — MCP-friendly Aula client
 
 ${fmt.bold('Usage')}:
   aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug]
-             [--transcript <file>] [--legacy-app-flow]
+             [--transcript <file>]
   aula status [--json]
   aula whoami [--json]
   aula doctor [--json] [--verbose]
@@ -49,8 +49,6 @@ ${fmt.bold('Notes')}:
     handling than the auto-generated .key file.
   • --debug captures a sanitised wire transcript to JSONL — safe to share
     when reporting issues.
-  • --legacy-app-flow opts into MitID's older /prove + /verify dance.
-    Insurance only; the default /complete path works in production.
   • aula doctor walks every read endpoint and reports per-call status.
   • aula log shows recent login attempts (success/failure + timestamps).
 `;
@@ -68,13 +66,11 @@ async function main(): Promise<void> {
       const debug = args.flags.debug === true;
       const transcript =
         typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined;
-      const legacyAppFlow = args.flags['legacy-app-flow'] === true;
       await runLogin({
         ...(username ? { username } : {}),
         ...(method ? { method } : {}),
         ...(debug ? { debug: true } : {}),
         ...(transcript ? { transcript } : {}),
-        ...(legacyAppFlow ? { legacyAppFlow: true } : {}),
       });
       break;
     }

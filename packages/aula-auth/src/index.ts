@@ -110,7 +110,6 @@ export {
   type MitidPollResult,
 } from './mitid-poll-machine.ts';
 export {
-  type AppCompleteResponse,
   type AppInitAuthResponse,
   type AppPollResponse,
   AUTHENTICATOR_TO_COMBINATION_ID,

@@ -19,11 +19,16 @@ import { SystematicClient } from './systematic.ts';
 import { decodeHtmlEntities, type IntegrationContext, isoWeekString } from './types.ts';
 
 function ctx(overrides: Partial<IntegrationContext> = {}): IntegrationContext {
+  // Default childUserIds mirrors the test's childIds with a `u` prefix so
+  // the two are clearly distinct; tests that need real data override.
+  const childIds = overrides.childIds ?? [1234567];
+  const childUserIds = overrides.childUserIds ?? childIds.map((id) => `u${id}`);
   return {
     isoWeek: isoWeekString(new Date('2026-05-04T08:00:00Z')),
     sessionId: 'cj',
     guardianId: '5000',
-    childIds: [1234567],
+    childIds,
+    childUserIds,
     institutionCodes: ['G12345'],
     ...overrides,
   };
@@ -397,11 +402,23 @@ describe('EasyIqSkoleportalClient.getWeekPlan', () => {
       http: http.asHttpClient(),
       widgets: fakeWidgets(),
     });
-    await client.getWeekPlan(ctx({ childIds: [42], institutionCodes: ['G42', 'G99'] }));
+    await client.getWeekPlan(
+      ctx({
+        childIds: [42],
+        childUserIds: ['abcd1234'],
+        institutionCodes: ['G42', 'G99'],
+      }),
+    );
     const auth = http.requested[0];
-    expect(auth?.headers?.['x-childfilter']).toBe('42');
+    // x-childfilter is the per-child userId token, NOT the numeric child id —
+    // SkolePortal 302→/Login on the wrong filter (PR scaarup/aula#352).
+    expect(auth?.headers?.['x-childfilter']).toBe('abcd1234');
     expect(auth?.headers?.['x-institutionfilter']).toBe('G42,G99');
     expect(auth?.headers?.['x-login']).toBe('cj');
+    // Authorization includes the literal `Bearer ` prefix. Aula's widget
+    // token endpoint returns the raw JWT — we add the prefix; PR #352's
+    // Python adds it inside `get_token` so the wire shape matches.
+    expect(auth?.headers?.['authorization']).toBe('Bearer TKN-1');
     const events = http.requested[1];
     expect(events?.url).toContain('loginId=LOGIN');
   });

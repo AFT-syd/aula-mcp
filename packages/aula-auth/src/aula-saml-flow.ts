@@ -66,12 +66,19 @@ export function parseMitidVerificationToken(html: string): string {
 /**
  * Extract the SAML form values from the page returned after MitID accepts the
  * authorization code. Per #310, RelayState may be absent; we tolerate that.
+ *
+ * `action` is the form's POST target. Aula's SimpleSAMLphp routes by SP id in
+ * the URL (e.g. `…/saml2-acs.php/uni-sp` vs `…/app-level3-sp`); using the
+ * wrong one yields a generic "Unhandled exception" page because the SP
+ * key/cert can't decrypt the assertion. Always POST to the form's own action.
  */
 export interface ExtractedSamlForm {
   samlResponse: string;
   relayState: string;
   /** True if RelayState was present in the source HTML. */
   hadRelayState: boolean;
+  /** The form's `action` attribute, or empty if the form had none. */
+  action: string;
 }
 
 export function extractSamlForm(html: string): ExtractedSamlForm {
@@ -83,11 +90,26 @@ export function extractSamlForm(html: string): ExtractedSamlForm {
     });
   }
   const relayState = inputs.RelayState ?? '';
+  const action = extractSamlFormAction(html);
   return {
     samlResponse,
     relayState,
     hadRelayState: 'RelayState' in inputs && inputs.RelayState != null,
+    action,
   };
+}
+
+/** Pull the action attribute off the first form that contains a SAMLResponse input. */
+function extractSamlFormAction(html: string): string {
+  // Quick regex scan — we only need the first <form> wrapping a SAMLResponse,
+  // which is how the broker's auto-submitting page is shaped.
+  const formMatch = html.match(
+    /<form\b[^>]*\baction=("([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/form>/i,
+  );
+  if (!formMatch) return '';
+  const body = formMatch[4] ?? '';
+  if (!/name=["']SAMLResponse["']/i.test(body)) return '';
+  return formMatch[2] ?? formMatch[3] ?? '';
 }
 
 export interface IdentityOption {

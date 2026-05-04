@@ -42,11 +42,31 @@ const mcp = new McpServer(
   },
   {
     capabilities: { tools: {} },
-    instructions:
-      'This server exposes a Danish school platform (Aula) to AI agents. ' +
-      "Always call `aula.discover` first — it returns the user's children, " +
-      'institution context, current API version, and which other aula.* tools ' +
-      'are callable. Then pick subordinate tools dynamically based on the manifest.',
+    instructions: [
+      'This server exposes the Danish school platform Aula to AI agents.',
+      '',
+      'Workflow:',
+      '1. Call `aula.discover` ONCE per session and reuse the manifest. It returns',
+      '   children (with names + ids), institutions, the current API version, and',
+      "   `detectedWidgets` — the widget IDs this user's schools actually have.",
+      '2. Resolve any kid names mentioned in the user prompt against',
+      '   `manifest.children[].name` (case-insensitive, partial — e.g. `luk`',
+      "   matches `Lukas`). Use the matching child's `id` for `childIds` and",
+      '   `userId` for `profileIds` when the tool asks.',
+      '3. Pick ONE subordinate tool, not many. `manifest.capabilities[area].tools[0]`',
+      '   is the right one for this user — only fall back to alternatives if the',
+      "   first errors. Never call ugeplan tools whose widget id isn't in",
+      '   `detectedWidgets`.',
+      "4. Default time windows: when the user says 'denne uge' / 'this week' use",
+      "   `range: 'this_week'`; 'næste uge' → 'next_week'; 'i dag' → 'today'.",
+      "   All times are Europe/Copenhagen — don't shift them.",
+      "5. Reply in the user's language (Danish if they wrote Danish). Dates as",
+      '   `mandag 12. maj`-style, not ISO, unless they ask.',
+      '',
+      "Never re-call `aula.discover` mid-session unless a tool returns 'children",
+      "or widgets unknown' — token refresh is handled server-side, you don't need",
+      'to poll for it.',
+    ].join('\n'),
   },
 );
 
@@ -80,6 +100,11 @@ process.stdout.write(`aula-mcp listening on http://${HOST}:${PORT}/mcp (healthz 
 const server = Bun.serve({
   port: PORT,
   hostname: HOST,
+  // MCP's Streamable HTTP transport holds the GET /mcp connection open for
+  // SSE; Bun's default 10 s idleTimeout closes it mid-session and prints
+  // "request timed out after 10 seconds." Bump to 4 min — long enough for
+  // typical client poll cadences, short enough to clean up dead peers.
+  idleTimeout: 240,
   fetch: app.fetch,
 });
 

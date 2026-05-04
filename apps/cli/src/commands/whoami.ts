@@ -42,10 +42,11 @@ export async function runWhoami(args: WhoamiCommandArgs = {}): Promise<void> {
         return { _error: (e as Error).message } as const;
       }),
     ]);
-    const guardianUserId =
+    const guardianUserIdRaw =
       typeof contextData === 'object' && contextData !== null && '_error' in contextData
         ? null
         : (contextData.userId ?? null);
+    const guardianUserId = guardianUserIdRaw == null ? null : String(guardianUserIdRaw);
 
     if (args.json) {
       printJson({

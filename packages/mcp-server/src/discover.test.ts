@@ -45,7 +45,8 @@ function fakeContext(opts: FakeOptions = {}): AulaContext {
       return {
         userId: 5000,
         pageConfiguration: {
-          widgetConfigurations: widgets.map((widgetId) => ({ widgetId })),
+          // Match the live API's nested shape: { widget: { widgetId } }.
+          widgetConfigurations: widgets.map((widgetId) => ({ widget: { widgetId } })),
         },
       };
     },
@@ -101,9 +102,10 @@ describe('buildDiscoverManifest', () => {
   test('Meebook widget (0004) → meebook tool listed first for ugeplan', async () => {
     const m = await buildDiscoverManifest(fakeContext({ widgets: ['0004'] }));
     expect(m.detectedWidgets).toContain('0004');
-    expect(m.capabilities.ugeplan?.tools[0]).toBe('aula.ugeplan.meebook');
+    expect(m.capabilities.ugeplan?.tools).toEqual(['aula.ugeplan.meebook']);
     expect(m.capabilities.ugeplan?.summary).toContain('meebook');
-    expect(m.capabilities.ugeplan?.notes).toBeUndefined();
+    // Meebook surfaces the one-time browser SSO prerequisite as a note.
+    expect(m.capabilities.ugeplan?.notes).toContain('Meebook');
   });
 
   test('EasyIQ SkolePortal widget (0128) → easyiq_skoleportal listed first', async () => {

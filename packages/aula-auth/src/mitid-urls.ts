@@ -22,7 +22,7 @@ export const mitidUrls = {
     return `${MITID_HOST}/mitid-core-client-backend/v1/authentication-sessions/${encodeURIComponent(sessionId)}/finalization`;
   },
 
-  // --- APP authenticator (newer "complete" path) ----------------------------
+  // --- APP authenticator (init-auth → init → prove → verify) -----------------
 
   appInitAuth(authenticatorSessionId: string): string {
     return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/init-auth`;
@@ -31,12 +31,6 @@ export const mitidUrls = {
   appInit(authenticatorSessionId: string): string {
     return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/init`;
   },
-
-  appComplete(authenticatorSessionId: string): string {
-    return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/complete`;
-  },
-
-  // --- APP authenticator (legacy /prove + /verify path) --------------------
 
   appProve(authenticatorSessionId: string): string {
     return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/prove`;

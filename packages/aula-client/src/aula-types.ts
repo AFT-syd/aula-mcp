@@ -21,8 +21,10 @@ export interface AulaEnvelope<T = unknown> {
 export interface AulaProfileChild {
   id: number;
   name: string;
-  /** Returned as a number in v22+. */
-  userId?: number;
+  /** Aula returns this as either a number or an opaque string token (mix
+   *  of letters and digits — looks like `"abcd1234"`); upstream Python
+   *  stringifies it (`str(child["userId"])`). Treat as opaque, don't parse. */
+  userId?: string | number;
   institutionProfile?: AulaInstitutionProfile;
 }
 
@@ -52,8 +54,23 @@ export interface ProfilesByLoginData {
 // profiles.getProfileContext
 // --------------------------------------------------------------------------
 
-export interface AulaWidgetConfiguration {
+/**
+ * Aula nests the actual widget metadata under `widget`. Python reads
+ * `widget["widget"]["widgetId"]` (BrowserClient.py-style helper code in the
+ * scaarup reference does the same). Top-level `widgetId` was an earlier
+ * shape — keep both fields optional so we tolerate either if the API
+ * mutates again.
+ */
+export interface AulaWidgetMeta {
   widgetId: string;
+  name?: string;
+}
+
+export interface AulaWidgetConfiguration {
+  /** Modern (nested) shape — what production currently returns. */
+  widget?: AulaWidgetMeta;
+  /** Legacy / hypothetical flat shape — read as a fallback. */
+  widgetId?: string;
   placement?: string;
   weight?: number;
 }
@@ -76,7 +93,8 @@ export interface AulaInstitutionProfileContext {
 }
 
 export interface ProfileContextData {
-  userId: number;
+  /** Aula returns this as either a number or an opaque string token. */
+  userId: string | number;
   institutionProfile?: AulaInstitutionProfileContext;
   institutionProfiles?: AulaInstitutionProfileContext[];
   pageConfiguration?: AulaPageConfiguration;

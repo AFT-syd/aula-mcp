@@ -18,8 +18,9 @@ import type { AulaContext } from './aula-context.ts';
 export interface DiscoveredChild {
   id: number;
   name: string;
-  /** The Aula institution profile id used by API methods like getDailyOverview. */
-  userId?: number;
+  /** The Aula institution-profile id used by API methods like getDailyOverview.
+   *  Aula returns this as either a number or an opaque string token. */
+  userId?: string | number;
   institution?: {
     id: number;
     name?: string;
@@ -59,6 +60,16 @@ export interface DiscoverManifest {
   detectedWidgets: string[];
   /** True when AULA_MCP_RAW=1 — the aula.raw_request escape hatch is callable. */
   rawRequestEnabled: boolean;
+  /** Inline hints repeating server `instructions` so the agent has the
+   *  workflow next to the data it just read. Cheaper to ground on this
+   *  than to re-fetch context — keep tight. */
+  usage: {
+    cache: string;
+    nameResolution: string;
+    pickOne: string;
+    timeWindows: string;
+    language: string;
+  };
 }
 
 /**
@@ -111,11 +122,13 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
   }
 
   // Capability detection from widget configs.
+  // Aula nests the widget id under `widget.widgetId` in the live API; older
+  // shape was flat (`w.widgetId`). Support both — Python does too.
   const detectedWidgets = Array.from(
     new Set(
       (contextData?.pageConfiguration?.widgetConfigurations ?? [])
-        .map((w) => w.widgetId)
-        .filter((id): id is string => typeof id === 'string'),
+        .map((w) => w.widget?.widgetId ?? w.widgetId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
     ),
   ).sort();
 
@@ -135,6 +148,18 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
     capabilities: buildCapabilities(detectedWidgets),
     detectedWidgets,
     rawRequestEnabled: process.env.AULA_MCP_RAW === '1',
+    usage: {
+      cache:
+        'Reuse this manifest for the rest of the session. Do not call aula.discover again unless a tool reports unknown children/widgets.',
+      nameResolution:
+        'Match kid names from the user prompt against children[].name (case-insensitive, partial). E.g. "luk" matches "Lukas". Use the matched child.id for childIds and child.userId for profileIds.',
+      pickOne:
+        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors.',
+      timeWindows:
+        'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Times are Europe/Copenhagen.',
+      language:
+        'Reply in the user\'s language. Format dates as "mandag 12. maj" for Danish output.',
+    },
   };
   return manifest;
 }
@@ -154,13 +179,22 @@ function buildCapabilities(detectedWidgets: string[]): Record<string, Discovered
   }
 
   const ugeplanDetected = detectedByCapability.get('ugeplan') ?? [];
-  const ugeplanTools = orderToolsByDetected(
-    ['aula.ugeplan.easyiq', 'aula.ugeplan.meebook', 'aula.ugeplan.easyiq_skoleportal'],
-    ugeplanDetected.map((d) => d.tool),
-  );
   const opgaverDetected = detectedByCapability.get('opgaver') ?? [];
   const ugebrevDetected = detectedByCapability.get('ugebrev') ?? [];
   const huskelistenDetected = detectedByCapability.get('huskelisten') ?? [];
+
+  // When detection picked a provider for a third-party capability, expose
+  // ONLY that tool. Listing alternates as fallbacks invites Claude to fan
+  // out and call all three "just to be sure", which is wasteful and noisy
+  // — `pickOne` in usage tells it not to, but a one-element array is more
+  // load-bearing than a hint.
+  const ugeplanCanonical = [
+    'aula.ugeplan.meebook',
+    'aula.ugeplan.easyiq',
+    'aula.ugeplan.easyiq_skoleportal',
+  ];
+  const ugeplanTools =
+    ugeplanDetected.length > 0 ? dedupe(ugeplanDetected.map((d) => d.tool)) : ugeplanCanonical;
 
   return {
     profiles: {
@@ -191,24 +225,20 @@ function buildCapabilities(detectedWidgets: string[]): Record<string, Discovered
     ugeplan: {
       summary:
         ugeplanDetected.length > 0
-          ? `Weekly plans. Detected providers: ${ugeplanDetected
+          ? `Weekly plans. Detected provider${ugeplanDetected.length > 1 ? 's' : ''}: ${ugeplanDetected
               .map((d) => d.provider)
               .join(', ')}.`
-          : 'Weekly plans from third-party vendors. No provider widget detected on your institution(s) — try the tools and surface whichever returns data.',
+          : 'Weekly plans. No provider widget detected — try in order and surface the first that returns data.',
       tools: ugeplanTools,
-      ...(ugeplanDetected.length === 0
-        ? {
-            notes:
-              'detectedWidgets is empty for ugeplan; agent should try in order and report results.',
-          }
-        : {}),
+      notes: ugeplanProviderNotes(ugeplanDetected.map((d) => d.provider)),
     },
     opgaver: {
       summary: 'Homework / task list from Min Uddannelse.',
       tools: ['aula.opgaver.minuddannelse'],
       ...(opgaverDetected.length === 0
         ? {
-            notes: 'Min Uddannelse opgaver widget (0030) not detected; this tool may return empty.',
+            notes:
+              'Min Uddannelse opgaver widget (0030) not detected — call may return empty. Skip if user did not specifically ask for opgaver.',
           }
         : {}),
     },
@@ -217,7 +247,8 @@ function buildCapabilities(detectedWidgets: string[]): Record<string, Discovered
       tools: ['aula.ugebrev.minuddannelse'],
       ...(ugebrevDetected.length === 0
         ? {
-            notes: 'Min Uddannelse ugebrev widget (0029) not detected; this tool may return empty.',
+            notes:
+              'Min Uddannelse ugebrev widget (0029) not detected — call may return empty. Skip if user did not specifically ask for ugebrev.',
           }
         : {}),
     },
@@ -225,27 +256,32 @@ function buildCapabilities(detectedWidgets: string[]): Record<string, Discovered
       summary: 'Homework reminders from Systematic.',
       tools: ['aula.huskelisten.systematic'],
       ...(huskelistenDetected.length === 0
-        ? { notes: 'Systematic widget (0062) not detected; this tool may return empty.' }
+        ? {
+            notes:
+              'Systematic widget (0062) not detected — call may return empty. Skip if user did not specifically ask for huskelisten.',
+          }
         : {}),
     },
   };
 }
 
-/** Detected tools first (deduped, in detected order), then any remaining in the canonical order. */
-function orderToolsByDetected(canonical: readonly string[], detected: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of detected) {
-    if (canonical.includes(t) && !seen.has(t)) {
-      out.push(t);
-      seen.add(t);
-    }
+/** Vendor-specific gotchas for ugeplan. Surface real prerequisites so the
+ *  agent can tell the user up-front instead of after a failed call. */
+function ugeplanProviderNotes(providers: string[]): string {
+  if (providers.includes('meebook')) {
+    return (
+      'Meebook requires a one-time browser SSO from app.aula.dk → click any ' +
+      'Meebook widget once — before programmatic access works. If the call ' +
+      'returns "first time you use this function with unilogin … log in to ' +
+      'Meebook first", relay that instruction verbatim and stop.'
+    );
   }
-  for (const t of canonical) {
-    if (!seen.has(t)) {
-      out.push(t);
-      seen.add(t);
-    }
+  if (providers.includes('easyiq')) {
+    return 'EasyIQ Ugeplan (widget 0001) — uses Aula widget tokens; no extra setup.';
   }
-  return out;
+  return '';
+}
+
+function dedupe(arr: readonly string[]): string[] {
+  return Array.from(new Set(arr));
 }

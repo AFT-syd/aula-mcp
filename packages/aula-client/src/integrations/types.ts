@@ -14,8 +14,13 @@ export interface IntegrationContext {
   sessionId: string;
   /** Aula user/profile id for the active guardian (numeric, stringified). */
   guardianId: string;
-  /** Children to query (numeric Aula child / user IDs). */
+  /** Children to query (numeric Aula child profile IDs). */
   childIds: number[];
+  /** Per-child opaque user-id tokens (mix of letters and digits, e.g.
+   *  `"abcd1234"`), aligned with `childIds` by index. SkolePortal's
+   *  `x-childfilter` header takes this, NOT the numeric `childIds`.
+   *  Optional — most integrations don't need it. */
+  childUserIds?: string[];
   /** Institution codes (e.g. "G12345"). */
   institutionCodes: string[];
   /** Date range for plugins that take from/to instead of week (ISO YYYY-MM-DD). */

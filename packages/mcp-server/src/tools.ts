@@ -22,9 +22,10 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     {
       title: 'Discover Aula context',
       description:
-        'Returns a typed manifest of the logged-in guardian: children, institutions, ' +
-        'API version, token state, and the names of subordinate tools the agent can ' +
-        'call to query specific data. Call this first before any other aula.* tool.',
+        'Returns a typed manifest of the logged-in guardian: children (with names + ids), ' +
+        'institutions, API version, detected widgets, and which subordinate aula.* tools to ' +
+        'call. Includes a `usage` block with name-resolution and tool-selection rules. ' +
+        'Call ONCE per session and reuse the result — do not re-call mid-session.',
       inputSchema: {},
     },
     async () => {
@@ -217,7 +218,7 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     institutionCodes: string[];
     isoWeek?: string | undefined;
   }) {
-    await context.getClient();
+    const client = await context.getClient();
     const record = context.record;
     if (!record) throw new Error('AulaContext: no token record loaded');
     // EasyIQ / MU / Meebook want the numeric guardian user-id (from
@@ -227,11 +228,27 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     // (= username), so we keep that field as the username and put the
     // numeric id under `guardianId` for the other plugins.
     const guardianUserId = await context.getGuardianUserId();
+
+    // SkolePortal's `x-childfilter` header takes the opaque per-child userId
+    // (alphanumeric token), not the numeric child profile id. Look it up
+    // from the profiles list, aligned with childIds by index. Missing → "".
+    const profilesData = await client.getProfilesByLogin();
+    const userIdByChildId = new Map<number, string>();
+    for (const profile of profilesData.profiles ?? []) {
+      for (const child of profile.children ?? []) {
+        if (child.userId != null) {
+          userIdByChildId.set(child.id, String(child.userId));
+        }
+      }
+    }
+    const childUserIds = args.childIds.map((id) => userIdByChildId.get(id) ?? '');
+
     return {
       isoWeek: args.isoWeek ?? isoWeekString(),
       sessionId: record.username,
-      guardianId: String(guardianUserId),
+      guardianId: guardianUserId,
       childIds: args.childIds,
+      childUserIds,
       institutionCodes: args.institutionCodes,
     };
   }

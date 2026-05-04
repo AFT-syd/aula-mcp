@@ -75,9 +75,6 @@ export interface AulaLoginOptions extends AulaLoginCredentials {
   /** Override poll cadence + deadline. */
   pollIntervalMs?: number;
   maxPollMs?: number;
-  /** Use the legacy MitID `/prove + /verify` dance instead of `/complete`.
-   *  Insurance fallback — only set if the modern path is rejected. */
-  useLegacyAppFlow?: boolean;
 }
 
 export interface AulaLoginClientOptions {
@@ -160,7 +157,6 @@ export class AulaLoginClient {
         ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.pollIntervalMs ? { pollIntervalMs: opts.pollIntervalMs } : {}),
         ...(opts.maxPollMs ? { maxPollMs: opts.maxPollMs } : {}),
-        ...(opts.useLegacyAppFlow ? { useLegacyFlow: true } : {}),
       });
     } else {
       // Asserted non-null above when method === 'CODE_TOKEN'.
@@ -189,6 +185,7 @@ export class AulaLoginClient {
     const callbackUrl = await this.postAulaSamlAcs(
       finalSamlForm.samlResponse,
       finalSamlForm.relayState,
+      finalSamlForm.action,
     );
     const { code, state: returnedState } = parseAuthorizationCallback(callbackUrl);
     if (returnedState !== state) {
@@ -349,7 +346,12 @@ export class AulaLoginClient {
       sessionStorageActiveChallenge: challenge,
     });
 
-    let res = await this.http.request(mitidUrls.loginMitid, { method: 'POST', body });
+    // Python's reference uses `requests` with default redirect-following
+    // here. We have a manual-redirect HTTP client (so the OAuth chain can
+    // inspect each hop), so we explicitly follow until the final 200 — that
+    // lands either on the SAML form or on the /loginoption identity picker.
+    let res = (await this.http.followRedirects(mitidUrls.loginMitid, { method: 'POST', body }))
+      .final;
 
     // Identity selection page.
     if (res.url.startsWith(mitidUrls.loginOption) || res.url === mitidUrls.loginOption) {
@@ -372,7 +374,12 @@ export class AulaLoginClient {
       reBody.set('ChosenOptionJson', picked.loginOptionsJson);
       reBody.set('SessionStorageActiveSessionUuid', newSessionUuid);
       reBody.set('SessionStorageActiveChallenge', newChallenge);
-      res = await this.http.request(mitidUrls.loginOption, { method: 'POST', body: reBody });
+      res = (
+        await this.http.followRedirects(mitidUrls.loginOption, {
+          method: 'POST',
+          body: reBody,
+        })
+      ).final;
     }
 
     return extractSamlForm(res.body);
@@ -385,7 +392,7 @@ export class AulaLoginClient {
   private async runBrokerHandoff(
     samlResponse: string,
     relayState: string,
-  ): Promise<{ samlResponse: string; relayState: string }> {
+  ): Promise<{ samlResponse: string; relayState: string; action: string }> {
     const samlBody = new URLSearchParams({ SAMLResponse: samlResponse, RelayState: relayState });
     const samlRes = await this.http.request(oauthUrls.brokerSamlEndpoint(this.oauth), {
       method: 'POST',
@@ -457,22 +464,33 @@ export class AulaLoginClient {
       samlResponse: finalSaml,
       relayState: finalRelay,
       hadRelayState,
+      action: finalAction,
     } = extractSamlForm(afterRes.body);
     if (!hadRelayState) {
       this.logger.warn('aula.saml.relay_state_missing', {
         note: 'Tolerating per upstream issue #310 — Level 3 flows sometimes omit it',
       });
     }
-    return { samlResponse: finalSaml, relayState: finalRelay };
+    return { samlResponse: finalSaml, relayState: finalRelay, action: finalAction };
   }
 
   /**
    * POST the SAML response to Aula's ACS, then walk the resulting redirects
    * until we reach the OAuth callback URL with `code` in the query string.
+   *
+   * `action` comes from the auto-submit form returned by the broker — Aula
+   * routes by SP id in the URL (`…/uni-sp` vs `…/app-level3-sp`); using the
+   * wrong one yields SimpleSAMLphp's "Unhandled exception" because the SP
+   * key/cert can't decrypt the assertion.
    */
-  private async postAulaSamlAcs(samlResponse: string, relayState: string): Promise<string> {
+  private async postAulaSamlAcs(
+    samlResponse: string,
+    relayState: string,
+    action: string,
+  ): Promise<string> {
     const body = new URLSearchParams({ SAMLResponse: samlResponse, RelayState: relayState });
-    let res = await this.http.request(oauthUrls.samlAcs(this.oauth), {
+    const acsUrl = action || oauthUrls.samlAcs(this.oauth);
+    let res = await this.http.request(acsUrl, {
       method: 'POST',
       body,
     });

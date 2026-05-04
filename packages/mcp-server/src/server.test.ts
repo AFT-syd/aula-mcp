@@ -59,7 +59,10 @@ function fakeContext(): AulaContext {
       return {
         userId: 5000,
         pageConfiguration: {
-          widgetConfigurations: [{ widgetId: '0001' }, { widgetId: '0030' }],
+          widgetConfigurations: [
+            { widget: { widgetId: '0001' } },
+            { widget: { widgetId: '0030' } },
+          ],
         },
       };
     },
@@ -75,8 +78,8 @@ function fakeContext(): AulaContext {
     async getClient(): Promise<AulaClient> {
       return fakeClient as unknown as AulaClient;
     },
-    async getGuardianUserId(): Promise<number> {
-      return 5000;
+    async getGuardianUserId(): Promise<string> {
+      return '5000';
     },
   } as unknown as AulaContext;
 }
