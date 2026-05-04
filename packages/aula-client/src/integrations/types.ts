@@ -98,23 +98,32 @@ export function isoDate(d: Date): string {
 
 /**
  * Decode the handful of HTML entities Danish school content tends to leak
- * (`&aelig;` / `&oslash;` / `&aring;` and the standard five). Cheap and
- * predictable; pulls in no parser. EasyIQ SkolePortal in particular sends
- * un-decoded entities in event titles and descriptions.
+ * (`&aelig;` / `&oslash;` / `&aring;` + uppercase + the standard five).
+ * Cheap and predictable; no parser dependency. EasyIQ SkolePortal in
+ * particular sends un-decoded entities in event titles and descriptions.
+ *
+ * Entity lookup is case-sensitive (HTML entities are case-sensitive per
+ * spec — `&aelig;` ≠ `&AElig;`). Using `/.../gi` collapses the two and
+ * silently lower-cases proper nouns; we hit that bug in test once already.
  */
+const HTML_ENTITY_MAP: Readonly<Record<string, string>> = Object.freeze({
+  '&aelig;': 'æ',
+  '&AElig;': 'Æ',
+  '&oslash;': 'ø',
+  '&Oslash;': 'Ø',
+  '&aring;': 'å',
+  '&Aring;': 'Å',
+  '&amp;': '&',
+  '&quot;': '"',
+  '&apos;': "'",
+  '&lt;': '<',
+  '&gt;': '>',
+  '&nbsp;': ' ',
+});
+
 export function decodeHtmlEntities(s: string): string {
   return s
-    .replace(/&aelig;/gi, 'æ')
-    .replace(/&oslash;/gi, 'ø')
-    .replace(/&aring;/gi, 'å')
-    .replace(/&AElig;/g, 'Æ')
-    .replace(/&Oslash;/g, 'Ø')
-    .replace(/&Aring;/g, 'Å')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+    .replace(/&[a-zA-Z]+;/g, (m) => HTML_ENTITY_MAP[m] ?? m)
     .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(Number.parseInt(h, 16)));
 }
