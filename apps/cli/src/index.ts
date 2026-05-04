@@ -60,11 +60,13 @@ async function main(): Promise<void> {
       const debug = args.flags.debug === true;
       const transcript =
         typeof args.flags.transcript === 'string' ? args.flags.transcript : undefined;
+      const legacyAppFlow = args.flags['legacy-app-flow'] === true;
       await runLogin({
         ...(username ? { username } : {}),
         ...(method ? { method } : {}),
         ...(debug ? { debug: true } : {}),
         ...(transcript ? { transcript } : {}),
+        ...(legacyAppFlow ? { legacyAppFlow: true } : {}),
       });
       break;
     }

@@ -14,6 +14,7 @@
 
 import { Buffer } from 'node:buffer';
 import { sha256 } from './crypto.ts';
+import { pkcs7Pad } from './encoding.ts';
 import { AulaAuthError } from './errors.ts';
 import type { AulaHttpClient } from './http.ts';
 import type { Logger } from './logger.ts';
@@ -116,6 +117,9 @@ export interface AppAuthLoopOptions {
   maxPollMs?: number;
   /** Stop signal from outside (e.g. CLI Ctrl-C). */
   signal?: AbortSignal;
+  /** Use the legacy `/prove + /verify` dance instead of the modern `/complete`.
+   *  Reach for this if MitID rejects `/complete` (rare; insurance only). */
+  useLegacyFlow?: boolean;
 }
 
 export interface MitidClientOptions {
@@ -156,9 +160,10 @@ export class MitidClient {
   private pollUrl?: string;
   private ticket?: string;
   private authResponse?: string;
-  // Note: the signature is also returned by the poll but only used by the
-  // legacy /prove + /verify flow we don't implement (the modern /complete
-  // path takes only M1 + flowValueProof).
+  /** The legacy /prove + /verify flow needs this to encrypt-sign the auth
+   *  response. The modern /complete flow ignores it. We capture it
+   *  unconditionally so a runtime-flagged switch to the legacy path works. */
+  private authResponseSignature?: string;
 
   // After authentication:
   private finalizationSessionId?: string;
@@ -266,8 +271,7 @@ export class MitidClient {
     const interpreted = interpretPollResponse(JSON.parse(res.body) as AppPollResponse);
     if (interpreted.kind === 'completed') {
       this.authResponse = interpreted.response;
-      // We discard `interpreted.responseSignature` — it's only used by the
-      // legacy /prove + /verify dance which we don't implement.
+      this.authResponseSignature = interpreted.responseSignature;
     }
     return interpreted;
   }
@@ -328,6 +332,95 @@ export class MitidClient {
     this.logger.info('mitid.app_authenticated');
   }
 
+  /**
+   * Legacy APP completion via the older `/init → /prove → /verify → /next`
+   * dance. Used as a fallback for environments where MitID hasn't rolled out
+   * `/complete` yet (or rolled it back). Differences from completeAppAuth:
+   *
+   *   • flowValueProof is HEX-encoded (vs base64 for /complete).
+   *   • Server returns an M2 from /prove that we verify with SRP stage 5.
+   *   • We then encrypt the responseSignature (PKCS#7-padded) with K via
+   *     AES-GCM and POST it to /verify (status 204 on success).
+   *   • Finally a /next call advances the authenticationSession.
+   */
+  async completeAppAuthLegacy(): Promise<void> {
+    if (
+      !this.authResponse ||
+      !this.authResponseSignature ||
+      !this.currentAuthenticatorSessionId ||
+      !this.currentAuthenticatorSessionFlowKey
+    ) {
+      throw new MitidError('completeAppAuthLegacy called before APP poll completed');
+    }
+
+    const srp = new CustomSrp();
+    const aHex = srp.stage1();
+
+    const initRes = await this.postJson(mitidUrls.appInit(this.currentAuthenticatorSessionId), {
+      randomA: { value: aHex },
+    });
+    if (initRes.status !== 200) {
+      throw new MitidError(`legacy appInit failed (status ${initRes.status})`);
+    }
+    const init = JSON.parse(initRes.body) as SrpInitResponse;
+
+    const passwordHex = sha256(
+      Buffer.concat([
+        Buffer.from(this.authResponse, 'base64'),
+        Buffer.from(this.currentAuthenticatorSessionFlowKey, 'utf8'),
+      ]),
+    ).toString('hex');
+
+    const { m1Hex, K } = srp.stage3({
+      srpSaltHex: init.srpSalt.value,
+      randomBHex: init.randomB.value,
+      passwordHex,
+      authSessionId: this.currentAuthenticatorSessionId,
+    });
+
+    const flowProofMessage = buildFlowProofMessage(this.flowProofContext());
+    // Legacy path uses HEX, not base64 (the only encoding-level difference
+    // between /prove and /complete).
+    const flowValueProof = signFlowValueProof(flowProofMessage, K, 'flowValues', 'hex');
+
+    const proveRes = await this.postJson(mitidUrls.appProve(this.currentAuthenticatorSessionId), {
+      m1: { value: m1Hex },
+      flowValueProof: { value: flowValueProof },
+    });
+    if (proveRes.status !== 200) {
+      throw new MitidError(
+        `legacy appProve failed (status ${proveRes.status}): ${proveRes.body.slice(0, 300)}`,
+      );
+    }
+    const proveJson = JSON.parse(proveRes.body) as { m2?: { value?: string } };
+    const m2 = proveJson.m2?.value;
+    if (!m2 || !srp.stage5(m2)) {
+      throw new MitidError('legacy appProve: server M2 verification failed');
+    }
+
+    // Encrypt the response signature with K and POST to /verify.
+    const padded = pkcs7Pad(Buffer.from(this.authResponseSignature, 'base64'), 16);
+    const encAuth = srp.authEnc(padded).toString('base64');
+
+    const verifyRes = await this.postJson(mitidUrls.appVerify(this.currentAuthenticatorSessionId), {
+      encAuth,
+      frontEndProcessingTime: 100,
+    });
+    if (verifyRes.status !== 204) {
+      throw new MitidError(
+        `legacy appVerify failed (status ${verifyRes.status}): ${verifyRes.body.slice(0, 300)}`,
+      );
+    }
+
+    const next = await this.postNext('');
+    this.assertNoFatalErrors(next);
+    if (!next.nextSessionId) {
+      throw new MitidError('legacy appVerify succeeded but /next missing nextSessionId');
+    }
+    this.finalizationSessionId = next.nextSessionId;
+    this.logger.info('mitid.app_authenticated_legacy');
+  }
+
   /** Convenience: drive the APP authenticator end-to-end with UI callbacks. */
   async authenticateWithApp(
     callbacks: AppAuthCallbacks = {},
@@ -363,7 +456,11 @@ export class MitidClient {
           await callbacks.onVerified?.();
           break;
         case 'completed':
-          await this.completeAppAuth();
+          if (opts.useLegacyFlow) {
+            await this.completeAppAuthLegacy();
+          } else {
+            await this.completeAppAuth();
+          }
           return;
         case 'error':
           throw new MitidError(`APP poll error: ${result.message}`);

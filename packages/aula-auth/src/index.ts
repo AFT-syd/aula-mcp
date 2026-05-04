@@ -57,6 +57,8 @@ export {
   bytesToHex,
   hexToBigInt,
   hexToBytes,
+  pkcs7Pad,
+  pkcs7Unpad,
 } from './encoding.ts';
 export { AulaAuthError, HtmlParseError, RedirectLoopError } from './errors.ts';
 export {

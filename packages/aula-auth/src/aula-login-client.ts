@@ -75,6 +75,9 @@ export interface AulaLoginOptions extends AulaLoginCredentials {
   /** Override poll cadence + deadline. */
   pollIntervalMs?: number;
   maxPollMs?: number;
+  /** Use the legacy MitID `/prove + /verify` dance instead of `/complete`.
+   *  Insurance fallback — only set if the modern path is rejected. */
+  useLegacyAppFlow?: boolean;
 }
 
 export interface AulaLoginClientOptions {
@@ -157,6 +160,7 @@ export class AulaLoginClient {
         ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.pollIntervalMs ? { pollIntervalMs: opts.pollIntervalMs } : {}),
         ...(opts.maxPollMs ? { maxPollMs: opts.maxPollMs } : {}),
+        ...(opts.useLegacyAppFlow ? { useLegacyFlow: true } : {}),
       });
     } else {
       // Asserted non-null above when method === 'CODE_TOKEN'.

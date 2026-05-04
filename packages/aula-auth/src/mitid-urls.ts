@@ -36,6 +36,16 @@ export const mitidUrls = {
     return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/complete`;
   },
 
+  // --- APP authenticator (legacy /prove + /verify path) --------------------
+
+  appProve(authenticatorSessionId: string): string {
+    return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/prove`;
+  },
+
+  appVerify(authenticatorSessionId: string): string {
+    return `${MITID_HOST}/mitid-code-app-auth/v1/authenticator-sessions/web/${encodeURIComponent(authenticatorSessionId)}/verify`;
+  },
+
   // --- CODE_TOKEN authenticator --------------------------------------------
 
   codeTokenInit(authenticatorSessionId: string): string {

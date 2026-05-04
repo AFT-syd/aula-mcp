@@ -8,6 +8,8 @@ import {
   bytesToHex,
   hexToBigInt,
   hexToBytes,
+  pkcs7Pad,
+  pkcs7Unpad,
 } from './encoding.ts';
 
 describe('base64url', () => {
@@ -73,5 +75,48 @@ describe('bigInt helpers', () => {
   test('hexToBigInt inverts bigIntToHex for non-zero values', () => {
     const n = 0xdeadbeefcafebabe1234567890n;
     expect(hexToBigInt(bigIntToHex(n))).toBe(n);
+  });
+});
+
+describe('pkcs7Pad / pkcs7Unpad', () => {
+  test('appends one full block when data is already block-aligned', () => {
+    const data = Buffer.alloc(16, 0xaa); // exactly one block
+    const padded = pkcs7Pad(data, 16);
+    expect(padded.length).toBe(32);
+    expect(padded.subarray(16).every((b) => b === 16)).toBe(true);
+  });
+
+  test('pads to next multiple of block size', () => {
+    const data = Buffer.from('hello'); // 5 bytes → pad 11 of 0x0b
+    const padded = pkcs7Pad(data, 16);
+    expect(padded.length).toBe(16);
+    expect(padded[5]).toBe(11);
+    expect(padded[15]).toBe(11);
+  });
+
+  test('roundtrip: pad → unpad returns the original', () => {
+    for (const len of [0, 1, 5, 15, 16, 17, 31, 32, 100]) {
+      const data = Buffer.alloc(len, 0x42);
+      const padded = pkcs7Pad(data, 16);
+      const unpadded = pkcs7Unpad(padded, 16);
+      expect(unpadded.equals(data)).toBe(true);
+    }
+  });
+
+  test('respects custom block sizes', () => {
+    expect(pkcs7Pad(Buffer.from('ab'), 8).length).toBe(8);
+    expect(pkcs7Pad(Buffer.from('abcdefgh'), 8).length).toBe(16); // already aligned → +1 block
+  });
+
+  test('rejects bogus block sizes', () => {
+    expect(() => pkcs7Pad(Buffer.from('x'), 0)).toThrow();
+    expect(() => pkcs7Pad(Buffer.from('x'), 256)).toThrow();
+  });
+
+  test('pkcs7Unpad rejects mis-padded data', () => {
+    const bad = Buffer.from([1, 2, 3, 4, 5]); // not a multiple of 16
+    expect(() => pkcs7Unpad(bad, 16)).toThrow();
+    const wrong = Buffer.alloc(16, 0xff); // pad-byte 0xff but earlier bytes don't match
+    expect(() => pkcs7Unpad(wrong, 16)).toThrow();
   });
 });
