@@ -7,99 +7,11 @@ import { AulaStepUpRequiredError, isoWeekString } from '@aula-mcp/aula-client';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AulaContext } from './aula-context.ts';
+import { resolveCalendarRange } from './calendar-range.ts';
 import { buildDiscoverManifest } from './discover.ts';
 
 function jsonContent(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
-}
-
-/**
- * Resolve a friendly date range to Aula's expected timestamp format.
- * Aula wants `YYYY-MM-DD HH:MM:SS.0000+ZZZZ` in Europe/Copenhagen. We compute
- * everything in UTC then format the resulting wall-clock with the +0200/+0100
- * offset Copenhagen has at that point.
- */
-function resolveCalendarRange(range: 'today' | 'tomorrow' | 'this_week' | 'next_week'): {
-  start: string;
-  end: string;
-} {
-  const now = new Date();
-  const today = startOfDayCopenhagen(now);
-  switch (range) {
-    case 'today':
-      return { start: aulaTs(today), end: aulaTs(addDays(today, 1)) };
-    case 'tomorrow': {
-      const t = addDays(today, 1);
-      return { start: aulaTs(t), end: aulaTs(addDays(t, 1)) };
-    }
-    case 'this_week': {
-      const monday = startOfWeekMondayCopenhagen(today);
-      return { start: aulaTs(monday), end: aulaTs(addDays(monday, 7)) };
-    }
-    case 'next_week': {
-      const monday = addDays(startOfWeekMondayCopenhagen(today), 7);
-      return { start: aulaTs(monday), end: aulaTs(addDays(monday, 7)) };
-    }
-  }
-}
-
-function addDays(d: Date, n: number): Date {
-  const x = new Date(d);
-  x.setUTCDate(x.getUTCDate() + n);
-  return x;
-}
-
-/** Midnight of the given calendar day in Europe/Copenhagen, as a UTC instant. */
-function startOfDayCopenhagen(d: Date): Date {
-  // Locale only affects the *default* formatting; we read numeric parts via
-  // formatToParts so it's a no-op behaviour-wise. da-DK is chosen for
-  // readability since this is a Danish-domain app.
-  const fmt = new Intl.DateTimeFormat('da-DK', {
-    timeZone: 'Europe/Copenhagen',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const parts = fmt.formatToParts(d);
-  const y = parts.find((p) => p.type === 'year')?.value ?? '1970';
-  const m = parts.find((p) => p.type === 'month')?.value ?? '01';
-  const day = parts.find((p) => p.type === 'day')?.value ?? '01';
-  return new Date(`${y}-${m}-${day}T00:00:00Z`);
-}
-
-/** Monday 00:00 of the week containing `d` (Copenhagen). */
-function startOfWeekMondayCopenhagen(d: Date): Date {
-  const day = d.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-  const offset = day === 0 ? -6 : 1 - day;
-  return addDays(d, offset);
-}
-
-/** Format `YYYY-MM-DD HH:MM:SS.0000+ZZZZ` in Europe/Copenhagen. */
-function aulaTs(d: Date): string {
-  // Same as above: the `da-DK` locale is purely for readability — we read
-  // the numeric `year`/`month`/`day`/`hour`/`minute`/`second` parts via
-  // formatToParts and assemble the ISO-ish string ourselves.
-  const fmt = new Intl.DateTimeFormat('da-DK', {
-    timeZone: 'Europe/Copenhagen',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(d);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
-  // Compute the offset Copenhagen has at this instant.
-  const cphHour = Number(get('hour'));
-  const utcHour = d.getUTCHours();
-  let offsetH = cphHour - utcHour;
-  if (offsetH > 12) offsetH -= 24;
-  if (offsetH < -12) offsetH += 24;
-  const sign = offsetH >= 0 ? '+' : '-';
-  const hh = String(Math.abs(offsetH)).padStart(2, '0');
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}.0000${sign}${hh}00`;
 }
 
 export function registerTools(server: McpServer, context: AulaContext): void {
