@@ -83,8 +83,8 @@ export class AulaHttpClient {
   private seq = 0;
 
   constructor(options: AulaHttpClientOptions = {}) {
-    this.jar = options.jar ?? new AulaCookieJar();
     this.logger = options.logger ?? silentLogger;
+    this.jar = options.jar ?? new AulaCookieJar({ logger: this.logger });
     this.tracer = options.tracer ?? noopTracer;
     this.defaultHeaders = { ...DEFAULT_HEADERS, ...(options.defaultHeaders ?? {}) };
   }
@@ -116,11 +116,37 @@ export class AulaHttpClient {
 
     this.logger.debug('http.request', { method: init.method, url });
     const start = Date.now();
-    const response = await fetch(url, init);
+    const seq = ++this.seq;
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      // Network-level failure (DNS, connection refused, TLS, abort, etc.).
+      // The wire trace is the user's primary debugging surface, so we record
+      // the failure as a synthetic status-0 entry before re-throwing.
+      const durationMs = Date.now() - start;
+      const message = (e as Error).message ?? String(e);
+      if (this.tracer !== noopTracer) {
+        this.tracer.record({
+          ts: new Date().toISOString(),
+          seq,
+          method: init.method ?? 'GET',
+          url: sanitizeUrl(url),
+          requestHeaders: sanitizeHeaders(headers),
+          requestBody: sanitizeRequestBody(options.body),
+          status: 0,
+          responseHeaders: {},
+          responseBody: `<network error: ${message}>`,
+          responseBodyBytes: 0,
+          durationMs,
+        });
+      }
+      this.logger.error('http.network_error', { url, error: message });
+      throw e;
+    }
     await this.jar.storeFromResponse(response.headers, url);
     const body = await response.text();
     const durationMs = Date.now() - start;
-    const seq = ++this.seq;
     if (this.tracer !== noopTracer) {
       const sanitisedBody = sanitizeResponseBody(body);
       this.tracer.record({

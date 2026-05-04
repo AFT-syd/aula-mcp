@@ -64,6 +64,7 @@ export {
   extractAttr,
   extractFormAction,
   extractHiddenInputs,
+  extractMetaRefreshUrl,
   extractText,
   type HtmlInput,
 } from './html.ts';

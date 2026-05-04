@@ -26,6 +26,16 @@ jobs:
         with:
           bun-version: latest
 
+      # Bun's install cache (separate from pnpm's) — keyed on the pnpm
+      # lockfile so it invalidates whenever dependencies change.
+      - name: Cache Bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install
         run: pnpm install --frozen-lockfile
 

@@ -1,0 +1,68 @@
+name: Bug report
+description: Something broke. Help us reproduce it.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: if this is a token-handling or MitID-flow vulnerability, do **not** open a public issue — see [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: doing
+    attributes:
+      label: What were you doing?
+      description: The command or MCP tool call you ran, plus any relevant context (first run, after `aula login`, etc.).
+      placeholder: |
+        Ran `pnpm --filter @aula-mcp/cli dev whoami` after a successful login this morning.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: |
+        Profile name + child list printed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+      description: Paste the full error message and stack trace if you have one.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: transcript
+    attributes:
+      label: Wire transcript
+      description: |
+        Re-run with `--debug` to capture a sanitised JSONL transcript:
+
+        ```
+        pnpm --filter @aula-mcp/cli dev login --debug
+        ```
+
+        The file lands in `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl`. Cookies, OAuth/SAML payloads, MitID auth codes, passwords, M1/flowValueProof and similar fields are already redacted to `<redacted N chars>`, so it is safe to paste here. Drop the file in as an attachment, or paste the relevant lines.
+      placeholder: |
+        Attach the .jsonl file or paste the failing entry here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Fill in the output of each command. The Aula API version (if known) helps us bake in #246/#248 mitigations.
+      value: |
+        - `bun --version`:
+        - `pnpm --version`:
+        - `node --version`:
+        - OS (`uname -a` or Windows build):
+        - Aula API version from the error (e.g. `v22`, `v23`), if known:
+    validations:
+      required: true

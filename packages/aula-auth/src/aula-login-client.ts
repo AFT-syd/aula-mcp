@@ -38,7 +38,7 @@ import {
   parseMitidVerificationToken,
 } from './aula-saml-flow.ts';
 import { AulaAuthError } from './errors.ts';
-import { extractHiddenInputs } from './html.ts';
+import { extractHiddenInputs, extractMetaRefreshUrl } from './html.ts';
 import { AulaHttpClient, type AulaResponse } from './http.ts';
 import type { Logger } from './logger.ts';
 import { silentLogger } from './logger.ts';
@@ -259,6 +259,18 @@ export class AulaLoginClient {
         }
         if (url.host === 'nemlog-in.mitid.dk' || url.host === 'www.mitid.dk') {
           return res;
+        }
+        // Some intermediate hops carry a `<meta http-equiv="refresh">` redirect
+        // instead of an HTTP Location. The Python `step3_follow_redirect_chain`
+        // also looks for these — without the fallback, login fails with
+        // "unexpected host" on perfectly valid pages.
+        const metaUrl = extractMetaRefreshUrl(res.body);
+        if (metaUrl) {
+          this.logger.debug('oauth.chain.meta_refresh', { metaUrl });
+          currentUrl = new URL(metaUrl, currentUrl).toString();
+          currentMethod = 'GET';
+          currentBody = undefined;
+          continue;
         }
         throw new AulaLoginError(
           `OAuth chain landed on unexpected host (${url.host}) at hop ${hop}`,

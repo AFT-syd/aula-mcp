@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new endpoint, integration plugin, or MCP tool.
+title: "[feature] "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: The user-facing outcome — what would you ask the agent, and what should it answer?
+      placeholder: |
+        "What homework does my kid have due this week?" — pulled from Min Uddannelse.
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: How would you like it to work?
+      description: New MCP tool? New field on `aula.discover`? New integration plugin? Sketch the shape — types, args, return value.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: prior_art
+    attributes:
+      label: Have you looked at scaarup/aula's issues for prior art?
+      description: The Python reference has years of accumulated lessons. If a similar feature exists upstream, link it — we usually port the same idea.
+      options:
+        - label: Yes, I checked https://github.com/scaarup/aula/issues
+        - label: "No"

@@ -66,3 +66,21 @@ export function extractText(input: HtmlInput, selector: string): string | null {
   if (el.length === 0) return null;
   return el.text().trim();
 }
+
+/**
+ * Extract a `<meta http-equiv="refresh" content="0;url=...">` URL.
+ * Returns the URL the page intends to redirect to via meta-refresh, or null
+ * if no such tag exists or the content has no `url=` part.
+ *
+ * The Python OAuth chain walker uses this as a fallback when a 200 response
+ * carries a redirect via meta-refresh instead of an HTTP Location header.
+ */
+export function extractMetaRefreshUrl(input: HtmlInput): string | null {
+  const $ = load(input);
+  const content = $('meta[http-equiv="refresh"], meta[http-equiv="Refresh"]')
+    .first()
+    .attr('content');
+  if (!content) return null;
+  const match = /url\s*=\s*['"]?([^'"]+)['"]?/i.exec(content);
+  return match?.[1] ?? null;
+}

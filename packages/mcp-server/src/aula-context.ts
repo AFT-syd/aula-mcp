@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import {
   AulaHttpClient,
   EncryptedFileTokenStore,
+  isTokenExpired,
   type Logger,
   type StoredTokenRecord,
   silentLogger,
@@ -36,13 +37,16 @@ export class AulaContext {
   private readonly store: TokenStore;
   private readonly logger: Logger;
   private readonly http: AulaHttpClient;
-  private clientPromise?: Promise<AulaClient>;
-  private widgetManagerPromise?: Promise<WidgetTokenManager>;
-  private cachedRecord?: StoredTokenRecord;
+  // Fields below are declared as `T | undefined` (not just `T?`) so we can
+  // explicitly assign `undefined` to invalidate the cache (the strict
+  // `exactOptionalPropertyTypes` flag forbids `field = undefined` on `T?`).
+  private clientPromise: Promise<AulaClient> | undefined;
+  private widgetManagerPromise: Promise<WidgetTokenManager> | undefined;
+  private cachedRecord: StoredTokenRecord | undefined;
   /** Numeric guardian user-id from getProfileContext. Used as the
    *  sessionId/sessionUUID/sessionuuid parameter by the third-party
    *  integrations. */
-  private cachedGuardianUserId?: number;
+  private cachedGuardianUserId: number | undefined;
 
   constructor(options: AulaContextOptions = {}) {
     this.store = options.store ?? defaultStore();
@@ -50,12 +54,40 @@ export class AulaContext {
     this.http = new AulaHttpClient({ logger: this.logger });
   }
 
-  /** Get the AulaClient, refreshing tokens if expired. */
+  /**
+   * Get the AulaClient, refreshing tokens if expired.
+   *
+   * Concurrency-safe (J5 fix): the in-flight `clientPromise` is shared across
+   * concurrent callers, so a refresh fires once and everyone waits on it.
+   *
+   * Auto-recovery (Q8): if the cached tokens have expired since the client
+   * was built, we drop the cached promise and rebuild — which re-reads the
+   * token store from disk. This means a fresh `aula login` from the CLI
+   * recovers a server with bad tokens without restarting the server process.
+   */
   async getClient(): Promise<AulaClient> {
+    if (this.cachedRecord && isTokenExpired(this.cachedRecord.tokens, 60)) {
+      this.logger.info('aula-context.token_expired_invalidating');
+      this.clientPromise = undefined;
+    }
     if (!this.clientPromise) {
-      this.clientPromise = this.buildClient();
+      this.clientPromise = this.buildClient().catch((err: unknown) => {
+        // On failure, clear the cached promise so the next call retries
+        // rather than re-throwing the same stale rejection forever.
+        this.clientPromise = undefined;
+        throw err;
+      });
     }
     return this.clientPromise;
+  }
+
+  /** Drop all cached state. Useful for tests; also called when an upstream
+   *  401/403 indicates the server's view of our tokens is wrong. */
+  invalidate(): void {
+    this.clientPromise = undefined;
+    this.widgetManagerPromise = undefined;
+    this.cachedRecord = undefined;
+    this.cachedGuardianUserId = undefined;
   }
 
   /**
