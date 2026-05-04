@@ -29,11 +29,16 @@ export {
   AulaStepUpRequiredError,
 } from './errors.ts';
 export {
+  decodeHtmlEntities,
   EasyIqClient,
   type EasyIqOptions,
+  EasyIqSkoleportalClient,
+  type EasyIqSkoleportalOptions,
   type IntegrationContext,
   type IntegrationPluginInfo,
+  isoDate,
   isoWeekString,
+  isoWeekToMonday,
   MeebookClient,
   type MeebookOptions,
   MinUddannelseClient,

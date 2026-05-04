@@ -353,6 +353,21 @@ export function registerTools(server: McpServer, context: AulaContext): void {
   );
 
   server.registerTool(
+    'aula.ugeplan.easyiq_skoleportal',
+    {
+      title: 'EasyIQ SkolePortal weekly plan',
+      description:
+        'Weekly plan from EasyIQ SkolePortal (widget 0128) — a different EasyIQ product than ' +
+        '`aula.ugeplan.easyiq` (widget 0001). Use when discover.detectedWidgets contains "0128".',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const sp = await context.getEasyIqSkoleportal();
+      return jsonContent(await sp.getWeekPlan(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
     'aula.opgaver.minuddannelse',
     {
       title: 'Min Uddannelse opgaveliste',

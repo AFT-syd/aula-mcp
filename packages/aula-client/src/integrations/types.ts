@@ -67,3 +67,54 @@ export function isoWeekString(date: Date = new Date()): string {
   const week = Math.ceil(((target.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
+
+/**
+ * Inverse of `isoWeekString`: given "YYYY-Www" return the Monday 00:00 UTC
+ * of that ISO week. Used by integrations that take a date instead of a
+ * week string (e.g. EasyIQ SkolePortal's CalendarGetWeekplanEvents).
+ */
+export function isoWeekToMonday(isoWeek: string): Date {
+  const m = /^(\d{4})-W(\d{2})$/.exec(isoWeek);
+  if (!m) throw new Error(`isoWeekToMonday: invalid ISO week string: ${isoWeek}`);
+  const year = Number(m[1]);
+  const week = Number(m[2]);
+  // Jan 4 is always in ISO week 1; back up to that week's Monday.
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const monWeek1 = new Date(jan4);
+  monWeek1.setUTCDate(jan4.getUTCDate() - (jan4Day - 1));
+  const monday = new Date(monWeek1);
+  monday.setUTCDate(monWeek1.getUTCDate() + (week - 1) * 7);
+  return monday;
+}
+
+/** Format a Date as `YYYY-MM-DD` (UTC). */
+export function isoDate(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Decode the handful of HTML entities Danish school content tends to leak
+ * (`&aelig;` / `&oslash;` / `&aring;` and the standard five). Cheap and
+ * predictable; pulls in no parser. EasyIQ SkolePortal in particular sends
+ * un-decoded entities in event titles and descriptions.
+ */
+export function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&aelig;/gi, 'æ')
+    .replace(/&oslash;/gi, 'ø')
+    .replace(/&aring;/gi, 'å')
+    .replace(/&AElig;/g, 'Æ')
+    .replace(/&Oslash;/g, 'Ø')
+    .replace(/&Aring;/g, 'Å')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(Number.parseInt(h, 16)));
+}
