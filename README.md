@@ -1,10 +1,13 @@
 # aula-mcp
 
 [![CI](https://github.com/Casperjuel/aula-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Casperjuel/aula-mcp/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 MCP server for [Aula](https://www.aula.dk) — the Danish school communication platform — so AI agents can read your kid's messages, calendar, ugeplaner, opgaver, and huskeliste through a typed interface.
 
 TypeScript port of [`scaarup/aula`](https://github.com/scaarup/aula). Owns its own MitID auth (no headless browser, no Playwright). Exposes everything as Model Context Protocol tools over a Hono Streamable-HTTP server. Runs on Bun.
+
+> **Disclaimer.** This project is not affiliated with, endorsed by, or sponsored by KMD A/S, Netcompany A/S, or the Aula consortium. *Aula* is a trademark of its respective owner; the name is used here solely to identify what this software talks to. All Aula data stays on your machine — there is no SaaS layer.
 
 ## Status
 
@@ -131,6 +134,10 @@ A full guide for adding integration plugins or porting more endpoints is in [CON
 All tokens stay on your machine. The MCP server runs on `localhost` by default — no external dependencies. The wire-trace tooling is opt-in (`--debug` flag) and redacts every known-secret field.
 
 The reference Python repo is for personal/family use of one's own children's school data. This project is the same — log in as yourself with your own MitID; do not use to access anyone else's account.
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for repo layout, conventions, and a guide for adding integration plugins. Contributors agree to follow the [Code of Conduct](./CODE_OF_CONDUCT.md). Security issues: please email **cj@signifly.com** rather than opening a public issue — see [SECURITY.md](./SECURITY.md).
 
 ## License
 
