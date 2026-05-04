@@ -1,0 +1,97 @@
+name: MitID drift canary
+
+# Daily probe of Aula's OAuth authorize endpoint. No credentials needed.
+# Detects when MitID infrastructure changes (host renames, new redirect
+# patterns, etc.) before users do. Files an issue on failure.
+#
+# Times its run for 06:00 UTC = 07:00 (winter) or 08:00 (summer) Copenhagen,
+# so morning failures land before the school day starts.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe authorize endpoint
+        id: probe
+        run: |
+          set -uo pipefail
+          response_file=$(mktemp)
+          # Hit the OAuth authorize endpoint with throwaway PKCE values. We
+          # only care about WHERE it tries to redirect us, not whether the
+          # whole flow succeeds — there's no MitID auth happening here.
+          status=$(curl -sS -o "$response_file" -w '%{http_code}' \
+            "https://login.aula.dk/simplesaml/module.php/oidc/authorize.php?response_type=code&client_id=_99949a54b8b65423862aac1bf629599ed64231607a&scope=aula-sensitive&redirect_uri=https://app-private.aula.dk&state=canary&code_challenge=Y2FuYXJ5LWNhbmFyeS1jYW5hcnktY2FuYXJ5LWNhbmFyeS1jYW5hcnk&code_challenge_method=S256" \
+            -H 'user-agent: aula-mcp-canary/1.0' \
+            -D /tmp/headers \
+            --max-redirs 0)
+          location=$(grep -i '^location:' /tmp/headers | head -1 | cut -d' ' -f2- | tr -d '\r' || true)
+          echo "Status: $status"
+          echo "Location: $location"
+          {
+            echo "status=$status"
+            echo "location=$location"
+          } >> "$GITHUB_OUTPUT"
+          rm -f "$response_file"
+
+      - name: Verify shape
+        run: |
+          set -e
+          status='${{ steps.probe.outputs.status }}'
+          location='${{ steps.probe.outputs.location }}'
+          if [ "$status" != "302" ] && [ "$status" != "303" ] && [ "$status" != "307" ]; then
+            echo "::error::Expected 3xx redirect, got HTTP $status"
+            exit 1
+          fi
+          # The redirect should land on the broker or directly on MitID.
+          case "$location" in
+            *broker.unilogin.dk*|*nemlog-in.mitid.dk*|*www.mitid.dk*)
+              echo "::notice::OAuth authorize endpoint healthy → $location"
+              ;;
+            *)
+              echo "::error::Unexpected redirect target: $location"
+              exit 2
+              ;;
+          esac
+
+      - name: File issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const title = `MitID drift canary failed (${today})`;
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift'
+            });
+            // Don't spam — only one open drift issue at a time.
+            if (issues.data.some(i => i.title.startsWith('MitID drift canary failed'))) {
+              core.info('An open drift issue already exists; not filing another.');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                `The nightly canary noticed Aula's OAuth authorize endpoint isn't redirecting`,
+                `to the expected broker hosts. MitID may have changed something.`,
+                ``,
+                `**Failing run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                ``,
+                `Run \`aula login --debug\` locally to capture a transcript and compare against`,
+                `the [reverse-eng notes in docs/architecture.md](../blob/main/docs/architecture.md).`
+              ].join('\n'),
+              labels: ['drift', 'urgent']
+            });

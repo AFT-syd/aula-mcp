@@ -25,6 +25,7 @@ import {
 } from '@aula-mcp/aula-auth';
 import qrcode from 'qrcode-terminal';
 import { fail, fmt, info, ok, prompt, promptSecret, rule, selectFromList, warn } from '../io.ts';
+import { appendLoginLog } from '../login-log.ts';
 import { defaultStore, transcriptPath } from '../store.ts';
 
 export interface LoginCommandArgs {
@@ -127,8 +128,25 @@ export async function runLogin(args: LoginCommandArgs): Promise<void> {
     info(
       `Access token expires in ${Math.max(0, tokens.expires_at - Math.floor(Date.now() / 1000))} s`,
     );
+    await appendLoginLog({
+      ts: new Date().toISOString(),
+      username,
+      method,
+      success: true,
+      ...(identityName ? { identityName } : {}),
+    }).catch(() => {
+      // Don't let log-append failures clobber a successful login.
+    });
   } catch (err) {
     fail(`Login failed: ${(err as Error).message}`);
+    await appendLoginLog({
+      ts: new Date().toISOString(),
+      username,
+      method,
+      success: false,
+      errorKind: (err as Error).name ?? 'Error',
+      errorMessage: (err as Error).message,
+    }).catch(() => {});
     if (memTracer && memTracer.entries.length > 0) {
       rule('wire transcript');
       process.stderr.write(formatTraceText(memTracer.entries));

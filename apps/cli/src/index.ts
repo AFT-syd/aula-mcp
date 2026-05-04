@@ -16,6 +16,7 @@
  */
 
 import { runDoctor } from './commands/doctor.ts';
+import { runLog } from './commands/log.ts';
 import { runLogin } from './commands/login.ts';
 import { runLogout } from './commands/logout.ts';
 import { runStatus } from './commands/status.ts';
@@ -27,10 +28,12 @@ import { parseArgs } from './parse-args.ts';
 const HELP = `${fmt.bold('aula')} — MCP-friendly Aula client
 
 ${fmt.bold('Usage')}:
-  aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug] [--transcript <file>]
+  aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug]
+             [--transcript <file>] [--legacy-app-flow]
   aula status [--json]
   aula whoami [--json]
   aula doctor [--json] [--verbose]
+  aula log [--last N] [--json]
   aula transcript list [--json]
   aula transcript view <file> [--json]
   aula transcript prune [--keep N] [--dry-run]
@@ -38,13 +41,18 @@ ${fmt.bold('Usage')}:
   aula --help
 
 ${fmt.bold('Notes')}:
-  • Tokens are stored AES-256-GCM-encrypted at ~/.config/aula-mcp/tokens.json.
-  • Set AULA_MCP_KEY (hex or passphrase) for stronger key handling than the
-    auto-generated key file.
+  • On macOS, tokens are stored in the system Keychain by default
+    (set AULA_MCP_NO_KEYCHAIN=1 to fall back to the encrypted file at
+    ~/.config/aula-mcp/tokens.json). On other platforms only the file
+    backend is available.
+  • Set AULA_MCP_KEY (hex or passphrase) for stronger file-backend key
+    handling than the auto-generated .key file.
   • --debug captures a sanitised wire transcript to JSONL — safe to share
     when reporting issues.
-  • aula doctor walks every read endpoint and reports per-call status. The
-    fastest way to know whether the whole pipeline is alive.
+  • --legacy-app-flow opts into MitID's older /prove + /verify dance.
+    Insurance only; the default /complete path works in production.
+  • aula doctor walks every read endpoint and reports per-call status.
+  • aula log shows recent login attempts (success/failure + timestamps).
 `;
 
 async function main(): Promise<void> {
@@ -82,6 +90,15 @@ async function main(): Promise<void> {
         verbose: args.flags.verbose === true,
       });
       break;
+    case 'log': {
+      const lastRaw = args.flags.last;
+      const last = typeof lastRaw === 'string' ? Number.parseInt(lastRaw, 10) : undefined;
+      await runLog({
+        ...(typeof last === 'number' && Number.isFinite(last) ? { last } : {}),
+        json: args.flags.json === true,
+      });
+      break;
+    }
     case 'transcript': {
       const sub = args.positional[0];
       switch (sub) {

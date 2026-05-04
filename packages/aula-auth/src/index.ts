@@ -80,6 +80,10 @@ export {
   type RedirectStep,
   type RequestOptions,
 } from './http.ts';
+export {
+  KeychainTokenStore,
+  type KeychainTokenStoreOptions,
+} from './keychain-token-store.ts';
 export { consoleLogger, type Logger, silentLogger } from './logger.ts';
 export {
   type AppAuthCallbacks,
