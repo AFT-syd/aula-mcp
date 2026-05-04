@@ -72,11 +72,30 @@ interface RawAux {
 
 /**
  * Parse the body of the `/login/mitid/initialize` response.
- * That response is JSON-encoded twice: an outer `Aux: <base64>` field whose
- * decoded contents is itself a JSON object.
+ *
+ * The response has *two* layers of JSON encoding:
+ *
+ *   1. The HTTP body is a JSON-encoded **string** (it starts with `"` and
+ *      ends with `"`, with `\"` escapes inside). One JSON.parse turns that
+ *      into a regular JSON object string; we have to parse a second time
+ *      to get the actual object. The Python reference handles this with
+ *      `if isinstance(resp_init_json, str): json.loads(resp_init_json)`.
+ *   2. Then the `Aux` field is itself base64-encoded JSON describing the
+ *      MitID core client (checksum + authenticationSessionId).
  */
 export function parseAuxResponse(rawBody: string | { Aux?: string }): MitidAuxData {
-  const outer = typeof rawBody === 'string' ? (JSON.parse(rawBody) as { Aux?: string }) : rawBody;
+  let outer: { Aux?: string };
+  if (typeof rawBody === 'string') {
+    let parsed = JSON.parse(rawBody) as unknown;
+    // Layer 1: nemlog-in.mitid.dk returns the JSON object as a JSON string,
+    // so the first parse hands back a string. Re-parse to get the object.
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed) as unknown;
+    }
+    outer = parsed as { Aux?: string };
+  } else {
+    outer = rawBody;
+  }
   const auxB64 = outer?.Aux;
   if (!auxB64) throw new MitidError('initialize response is missing `Aux` field');
 

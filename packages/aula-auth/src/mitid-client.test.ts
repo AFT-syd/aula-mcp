@@ -31,6 +31,22 @@ describe('parseAuxResponse', () => {
     expect(out.authenticationSessionId).toBe('abc');
   });
 
+  test('handles the double-JSON-encoded body that nemlog-in.mitid.dk actually returns', () => {
+    // Real shape captured from a live login: the HTTP body is a JSON string
+    // whose contents are the actual JSON object (so parsing once yields a
+    // string, not the object).
+    const inner = {
+      coreClient: { checksum: Buffer.from('cafebabe', 'hex').toString('base64') },
+      parameters: { authenticationSessionId: '78b4810a-e1e7-4e04-8fb4-650d7d9c81ef' },
+    };
+    const auxB64 = Buffer.from(JSON.stringify(inner), 'utf8').toString('base64');
+    const innerObject = JSON.stringify({ Aux: auxB64 });
+    const doubleEncodedBody = JSON.stringify(innerObject); // wraps the whole thing as a JSON string
+    const out = parseAuxResponse(doubleEncodedBody);
+    expect(out.clientHash).toBe('cafebabe');
+    expect(out.authenticationSessionId).toBe('78b4810a-e1e7-4e04-8fb4-650d7d9c81ef');
+  });
+
   test('throws when Aux missing', () => {
     expect(() => parseAuxResponse('{}')).toThrow(MitidError);
   });
