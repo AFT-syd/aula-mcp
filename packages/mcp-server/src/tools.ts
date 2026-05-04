@@ -13,6 +13,91 @@ function jsonContent(data: unknown): { content: Array<{ type: 'text'; text: stri
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
 
+/**
+ * Resolve a friendly date range to Aula's expected timestamp format.
+ * Aula wants `YYYY-MM-DD HH:MM:SS.0000+ZZZZ` in Europe/Copenhagen. We compute
+ * everything in UTC then format the resulting wall-clock with the +0200/+0100
+ * offset Copenhagen has at that point.
+ */
+function resolveCalendarRange(range: 'today' | 'tomorrow' | 'this_week' | 'next_week'): {
+  start: string;
+  end: string;
+} {
+  const now = new Date();
+  const today = startOfDayCopenhagen(now);
+  switch (range) {
+    case 'today':
+      return { start: aulaTs(today), end: aulaTs(addDays(today, 1)) };
+    case 'tomorrow': {
+      const t = addDays(today, 1);
+      return { start: aulaTs(t), end: aulaTs(addDays(t, 1)) };
+    }
+    case 'this_week': {
+      const monday = startOfWeekMondayCopenhagen(today);
+      return { start: aulaTs(monday), end: aulaTs(addDays(monday, 7)) };
+    }
+    case 'next_week': {
+      const monday = addDays(startOfWeekMondayCopenhagen(today), 7);
+      return { start: aulaTs(monday), end: aulaTs(addDays(monday, 7)) };
+    }
+  }
+}
+
+function addDays(d: Date, n: number): Date {
+  const x = new Date(d);
+  x.setUTCDate(x.getUTCDate() + n);
+  return x;
+}
+
+/** Midnight of the given calendar day in Europe/Copenhagen, as a UTC instant. */
+function startOfDayCopenhagen(d: Date): Date {
+  // Format the date in Copenhagen, then parse back as UTC midnight of that
+  // local day. Good enough for the schedule windows the calendar API takes.
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Copenhagen',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = fmt.formatToParts(d);
+  const y = parts.find((p) => p.type === 'year')?.value ?? '1970';
+  const m = parts.find((p) => p.type === 'month')?.value ?? '01';
+  const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+  return new Date(`${y}-${m}-${day}T00:00:00Z`);
+}
+
+/** Monday 00:00 of the week containing `d` (Copenhagen). */
+function startOfWeekMondayCopenhagen(d: Date): Date {
+  const day = d.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  const offset = day === 0 ? -6 : 1 - day;
+  return addDays(d, offset);
+}
+
+/** Format `YYYY-MM-DD HH:MM:SS.0000+ZZZZ` in Europe/Copenhagen. */
+function aulaTs(d: Date): string {
+  const fmt = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Copenhagen',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
+  // Compute the offset Copenhagen has at this instant.
+  const cphHour = Number(get('hour'));
+  const utcHour = d.getUTCHours();
+  let offsetH = cphHour - utcHour;
+  if (offsetH > 12) offsetH -= 24;
+  if (offsetH < -12) offsetH += 24;
+  const sign = offsetH >= 0 ? '+' : '-';
+  const hh = String(Math.abs(offsetH)).padStart(2, '0');
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}.0000${sign}${hh}00`;
+}
+
 export function registerTools(server: McpServer, context: AulaContext): void {
   // --- aula.discover -------------------------------------------------------
 
@@ -77,26 +162,101 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     {
       title: 'Calendar events (school schedule)',
       description:
-        'Lessons + events between `start` and `end` for the given institution-profile IDs. ' +
-        'Timestamps must be ISO with timezone offset, e.g. "2026-05-04 00:00:00.0000+0200".',
+        'Lessons + events for the given institution-profile IDs. ' +
+        'Pass `range` for a preset window (today/tomorrow/this_week/next_week) ' +
+        'OR `start`+`end` for a specific window. Timestamps are formatted as Aula ' +
+        'expects: "YYYY-MM-DD HH:MM:SS.0000+ZZZZ". Aula uses Europe/Copenhagen.',
       inputSchema: {
         profileIds: z.array(z.number().int().positive()).min(1),
-        start: z.string().min(1),
-        end: z.string().min(1),
+        range: z.enum(['today', 'tomorrow', 'this_week', 'next_week']).optional(),
+        start: z.string().min(1).optional(),
+        end: z.string().min(1).optional(),
         resourceIds: z.array(z.number().int().positive()).optional(),
       },
     },
     async (args) => {
+      let start: string;
+      let end: string;
+      if (args.start && args.end) {
+        start = args.start;
+        end = args.end;
+      } else {
+        const window = resolveCalendarRange(args.range ?? 'this_week');
+        start = window.start;
+        end = window.end;
+      }
       const client = await context.getClient();
       const events = await client.getCalendarEvents({
         profileIds: args.profileIds,
-        start: args.start,
-        end: args.end,
+        start,
+        end,
         ...(args.resourceIds ? { resourceIds: args.resourceIds } : {}),
       });
       return jsonContent(events);
     },
   );
+
+  // --- aula.notifications.list ---------------------------------------------
+
+  server.registerTool(
+    'aula.notifications.list',
+    {
+      title: 'Aula notifications',
+      description: 'Unread items + activity for the active guardian profile.',
+      inputSchema: {},
+    },
+    async () => {
+      const client = await context.getClient();
+      return jsonContent(await client.getNotifications());
+    },
+  );
+
+  // --- aula.posts.list -----------------------------------------------------
+
+  server.registerTool(
+    'aula.posts.list',
+    {
+      title: 'Aula posts (class news feed)',
+      description: 'Teacher posts and class-level updates.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).optional(),
+        index: z.number().int().min(0).optional(),
+      },
+    },
+    async (args) => {
+      const client = await context.getClient();
+      return jsonContent(
+        await client.getPosts({
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.index !== undefined ? { index: args.index } : {}),
+        }),
+      );
+    },
+  );
+
+  // --- aula.raw_request (gated) --------------------------------------------
+
+  if (process.env.AULA_MCP_RAW === '1') {
+    server.registerTool(
+      'aula.raw_request',
+      {
+        title: 'Raw Aula API call (escape hatch)',
+        description:
+          'Call any Aula API method directly. Enabled when AULA_MCP_RAW=1. The CSRF token + ' +
+          'access_token are added automatically; the response envelope is unwrapped to its ' +
+          '`data` field. Use sparingly — most needs have a typed tool.',
+        inputSchema: {
+          method: z.string().min(1).describe('e.g. "profiles.getProfileContext"'),
+          query: z.record(z.string(), z.string()).optional(),
+          body: z.unknown().optional(),
+        },
+      },
+      async (args) => {
+        const client = await context.getClient();
+        return jsonContent(await client.rawRequest(args.method, args.query ?? {}, args.body));
+      },
+    );
+  }
 
   // --- aula.messages.list_threads ------------------------------------------
 

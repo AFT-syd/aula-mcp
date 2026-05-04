@@ -212,6 +212,44 @@ export class AulaClient {
   }
 
   /**
+   * `notifications.getNotificationsForActiveProfile` — what's unread.
+   * Returns the raw `data` field; agents can format the shape they need.
+   */
+  async getNotifications(): Promise<unknown> {
+    return this.getJson<unknown>('notifications.getNotificationsForActiveProfile');
+  }
+
+  /**
+   * `posts.getAllPosts` — class-level news feed (teacher posts, etc.).
+   * Returns the raw `data` field. Pagination via `limit` + `index` (both 0-based).
+   */
+  async getPosts(opts: { limit?: number; index?: number } = {}): Promise<unknown> {
+    const params: Record<string, string> = {};
+    if (opts.limit !== undefined) params.limit = String(opts.limit);
+    if (opts.index !== undefined) params.index = String(opts.index);
+    return this.getJson<unknown>('posts.getAllPosts', params);
+  }
+
+  /**
+   * Generic escape hatch for endpoints we haven't typed wrappers for.
+   * The MCP server gates this behind AULA_MCP_RAW=1.
+   *
+   * @param method     Aula API method name (e.g. 'profiles.getProfilesByLogin')
+   * @param params     Extra query-string params (access_token + method are added)
+   * @param body       JSON body for POST requests; pass undefined for GET
+   */
+  async rawRequest(
+    method: string,
+    params: Record<string, string> = {},
+    body?: unknown,
+  ): Promise<unknown> {
+    if (body !== undefined) {
+      return this.postJson<unknown>(method, JSON.stringify(body));
+    }
+    return this.getJson<unknown>(method, params);
+  }
+
+  /**
    * Get a token for a third-party widget (Min Uddannelse / EasyIQ / Meebook
    * / Systematic). Used by the WidgetTokenManager (next package layer).
    */
