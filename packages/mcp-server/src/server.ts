@@ -23,10 +23,10 @@ import { Hono } from 'hono';
 import { AulaContext } from './aula-context.ts';
 import { registerTools } from './tools.ts';
 
-const PORT = Number(process.env['AULA_MCP_PORT'] ?? 7878);
-const HOST = process.env['AULA_MCP_HOST'] ?? '127.0.0.1';
+const PORT = Number(process.env.AULA_MCP_PORT ?? 7878);
+const HOST = process.env.AULA_MCP_HOST ?? '127.0.0.1';
 
-const logger = process.env['AULA_MCP_LOG'] === '1' ? consoleLogger('aula-mcp') : silentLogger;
+const logger = process.env.AULA_MCP_LOG === '1' ? consoleLogger('aula-mcp') : silentLogger;
 
 const context = new AulaContext({ logger });
 

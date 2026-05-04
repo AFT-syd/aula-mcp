@@ -17,6 +17,7 @@ import {
   sanitizeHeaders,
   sanitizeRequestBody,
   sanitizeResponseBody,
+  sanitizeUrl,
   type WireTracer,
 } from './wire-tracer.ts';
 
@@ -126,7 +127,7 @@ export class AulaHttpClient {
         ts: new Date().toISOString(),
         seq,
         method: init.method ?? 'GET',
-        url,
+        url: sanitizeUrl(url),
         requestHeaders: sanitizeHeaders(headers),
         requestBody: sanitizeRequestBody(options.body),
         status: response.status,

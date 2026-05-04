@@ -39,6 +39,10 @@ export class AulaContext {
   private clientPromise?: Promise<AulaClient>;
   private widgetManagerPromise?: Promise<WidgetTokenManager>;
   private cachedRecord?: StoredTokenRecord;
+  /** Numeric guardian user-id from getProfileContext. Used as the
+   *  sessionId/sessionUUID/sessionuuid parameter by the third-party
+   *  integrations. */
+  private cachedGuardianUserId?: number;
 
   constructor(options: AulaContextOptions = {}) {
     this.store = options.store ?? defaultStore();
@@ -52,6 +56,24 @@ export class AulaContext {
       this.clientPromise = this.buildClient();
     }
     return this.clientPromise;
+  }
+
+  /**
+   * Numeric guardian user-id (from `profiles.getProfileContext.data.userId`).
+   * Required as the `sessionId` / `sessionUUID` / `sessionuuid` parameter for
+   * EasyIQ, Min Uddannelse, and Meebook. Cached after the first call.
+   *
+   * Per Python `client.py:670/757` — the integration calls fail without it.
+   */
+  async getGuardianUserId(): Promise<number> {
+    if (this.cachedGuardianUserId !== undefined) return this.cachedGuardianUserId;
+    const client = await this.getClient();
+    const ctx = await client.getProfileContext('guardian');
+    if (typeof ctx.userId !== 'number') {
+      throw new Error('profiles.getProfileContext returned no numeric userId');
+    }
+    this.cachedGuardianUserId = ctx.userId;
+    return ctx.userId;
   }
 
   async getWidgetManager(): Promise<WidgetTokenManager> {
@@ -95,7 +117,7 @@ export class AulaContext {
 }
 
 function defaultStore(): TokenStore {
-  const dir = process.env['AULA_MCP_DIR'] ?? join(homedir(), '.config', 'aula-mcp');
+  const dir = process.env.AULA_MCP_DIR ?? join(homedir(), '.config', 'aula-mcp');
   return new EncryptedFileTokenStore({
     filePath: join(dir, 'tokens.json'),
     keyFilePath: join(dir, '.key'),

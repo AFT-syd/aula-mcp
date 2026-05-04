@@ -136,7 +136,7 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
         tools: ['aula.huskelisten.systematic'],
       },
     },
-    rawRequestEnabled: process.env['AULA_MCP_RAW'] === '1',
+    rawRequestEnabled: process.env.AULA_MCP_RAW === '1',
   };
   return manifest;
 }

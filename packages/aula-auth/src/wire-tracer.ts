@@ -106,6 +106,7 @@ const SECRET_BODY_FIELDS = [
   'access_token',
   'refresh_token',
   'code',
+  'code_verifier',
   'samlresponse',
   'relaystate',
   '__requestverificationtoken',
@@ -119,6 +120,42 @@ const SECRET_BODY_FIELDS = [
 ];
 
 const SECRET_BODY_FIELDS_SET = new Set(SECRET_BODY_FIELDS.map((s) => s.toLowerCase()));
+
+/**
+ * Query-string keys to redact in URLs before they hit a tracer. Aula's API
+ * passes `access_token` as a query param (not a header), so without this the
+ * --debug transcript would leak the JWT in every URL.
+ */
+const SECRET_URL_PARAMS = new Set([
+  'access_token',
+  'refresh_token',
+  'code',
+  'code_verifier',
+  'state',
+  'mitidauthcode',
+  '__requestverificationtoken',
+  'ticket',
+  'session_code',
+]);
+
+/** Sanitise a URL by redacting known-secret query-string values. */
+export function sanitizeUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  let mutated = false;
+  for (const key of Array.from(parsed.searchParams.keys())) {
+    if (SECRET_URL_PARAMS.has(key.toLowerCase())) {
+      const v = parsed.searchParams.get(key) ?? '';
+      parsed.searchParams.set(key, `<redacted ${v.length}>`);
+      mutated = true;
+    }
+  }
+  return mutated ? parsed.toString() : url;
+}
 
 /** Truncation cap for response bodies (bytes). */
 export const DEFAULT_BODY_CAP = 4_096;

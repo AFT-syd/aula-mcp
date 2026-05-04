@@ -5,8 +5,39 @@ import {
   sanitizeHeaders,
   sanitizeRequestBody,
   sanitizeResponseBody,
+  sanitizeUrl,
   type WireEntry,
 } from './wire-tracer.ts';
+
+describe('sanitizeUrl', () => {
+  test('redacts access_token in query string', () => {
+    const url =
+      'https://www.aula.dk/api/v22/?method=profiles.getProfilesByLogin&access_token=eyJhbGciOiJSUzI1NiJ9.long.jwt.value';
+    const out = sanitizeUrl(url);
+    expect(out).toContain('method=profiles.getProfilesByLogin');
+    expect(out).not.toContain('eyJhbGciOiJSUzI1NiJ9');
+    expect(out).toContain('access_token=%3Credacted');
+  });
+
+  test('redacts every known-secret query param', () => {
+    const url = 'https://example.com/?code=AUTHCODE&state=STATE&access_token=AT&ticket=T&keep=ok';
+    const out = sanitizeUrl(url);
+    expect(out).not.toContain('AUTHCODE');
+    expect(out).not.toContain('STATE');
+    expect(out).not.toContain('AT');
+    expect(out).not.toContain('=T&');
+    expect(out).toContain('keep=ok');
+  });
+
+  test('returns the URL unchanged when no secrets are present', () => {
+    const url = 'https://example.com/x?foo=bar';
+    expect(sanitizeUrl(url)).toBe(url);
+  });
+
+  test('returns the input unchanged when not a valid URL', () => {
+    expect(sanitizeUrl('not a url')).toBe('not a url');
+  });
+});
 
 describe('sanitizeHeaders', () => {
   test('redacts Cookie / Authorization / Set-Cookie / CSRF headers', () => {
@@ -39,14 +70,16 @@ describe('sanitizeRequestBody', () => {
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
       code: 'AUTHCODE',
-      code_verifier: 'V',
+      code_verifier: 'PKCE_VERIFIER',
       password: 'hunter2',
     });
     const out = sanitizeRequestBody(body);
     expect(out).toContain('grant_type=authorization_code');
     expect(out).toContain('code=%3Credacted');
     expect(out).toContain('password=%3Credacted');
-    expect(out).toContain('code_verifier=V');
+    // code_verifier is also redacted — it's PKCE state and could be used to
+    // forge a token exchange against a captured authorization code.
+    expect(out).toContain('code_verifier=%3Credacted');
   });
 
   test('redacts secret fields in JSON body', () => {

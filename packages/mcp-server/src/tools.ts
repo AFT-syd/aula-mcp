@@ -144,10 +144,17 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     await context.getClient();
     const record = context.record;
     if (!record) throw new Error('AulaContext: no token record loaded');
+    // EasyIQ / MU / Meebook want the numeric guardian user-id (from
+    // getProfileContext). Systematic uses the literal MitID username for its
+    // sessionId — that's the only integration where `sessionId` and the
+    // numeric id differ. SystematicClient currently reads `ctx.sessionId`
+    // (= username), so we keep that field as the username and put the
+    // numeric id under `guardianId` for the other plugins.
+    const guardianUserId = await context.getGuardianUserId();
     return {
       isoWeek: args.isoWeek ?? isoWeekString(),
       sessionId: record.username,
-      guardianId: record.username,
+      guardianId: String(guardianUserId),
       childIds: args.childIds,
       institutionCodes: args.institutionCodes,
     };

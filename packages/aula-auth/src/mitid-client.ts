@@ -580,10 +580,15 @@ export class MitidClient {
   private assertNoFatalErrors(next: NextAuthenticatorResponse): void {
     const err = next.errors?.[0];
     if (!err) return;
+    const text =
+      err.userMessage?.text?.text ?? err.message ?? err.errorCode ?? 'unknown MitID error';
+    // Specific error code → typed subclass so callers can branch on it.
     if (err.errorCode === 'control.authenticator_cannot_be_started') {
-      const text = err.userMessage?.text?.text ?? err.message ?? 'authenticator cannot be started';
       throw new MitidAuthenticatorUnavailableError(text);
     }
+    // Everything else still surfaces — Python treats any non-empty errors[]
+    // as fatal (BrowserClient.py:551, :291). Don't drop them silently.
+    throw new MitidError(`MitID /next error${err.errorCode ? ` (${err.errorCode})` : ''}: ${text}`);
   }
 
   private flowProofContext(): FlowProofContext {

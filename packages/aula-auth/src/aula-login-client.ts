@@ -215,6 +215,11 @@ export class AulaLoginClient {
    * MitID page (with __RequestVerificationToken) or a broker IdP-selection
    * page (which we then submit and continue from). Returns the final response
    * sitting on a MitID page.
+   *
+   * Broker IdP form is fragile — Aula has historically named the field
+   * `selectedIdp` with value `nemlogin3`, but the Python reference brute-
+   * forces 4 selectors × 4 values when the obvious combo doesn't redirect.
+   * We mirror that fallback so a renamed field doesn't kill login.
    */
   private async walkOauthChain(authorizeUrl: string): Promise<AulaResponse> {
     let currentUrl = authorizeUrl;
@@ -244,12 +249,12 @@ export class AulaLoginClient {
       if (res.status === 200) {
         const url = new URL(currentUrl);
         if (url.host === 'broker.unilogin.dk') {
-          // IdP-selection page; submit it and continue the chain.
-          const broker = parseBrokerIdpForm(res.body);
-          const action = new URL(broker.action, currentUrl).toString();
-          currentUrl = action;
-          currentMethod = 'POST';
-          currentBody = new URLSearchParams(broker.data);
+          // IdP-selection page; try the field/value combinations until one
+          // returns a 3xx that takes us off the broker page.
+          const submitted = await this.tryBrokerIdpCombinations(res.body, currentUrl);
+          currentUrl = submitted.nextUrl;
+          currentMethod = 'GET';
+          currentBody = undefined;
           continue;
         }
         if (url.host === 'nemlog-in.mitid.dk' || url.host === 'www.mitid.dk') {
@@ -265,6 +270,39 @@ export class AulaLoginClient {
       );
     }
     throw new AulaLoginError('OAuth chain exceeded 15 hops');
+  }
+
+  /**
+   * Try each (field, value) combination at the broker IdP form. First one
+   * that produces a 3xx with a Location header wins.
+   */
+  private async tryBrokerIdpCombinations(
+    pageHtml: string,
+    pageUrl: string,
+  ): Promise<{ nextUrl: string }> {
+    const selectors = ['selectedIdp', 'idp', 'authMethod', 'provider'];
+    const values = ['nemlogin3', 'mitid', 'MitID', 'nemlogin'];
+    const triedDescriptions: string[] = [];
+
+    for (const idpField of selectors) {
+      for (const idpValue of values) {
+        const broker = parseBrokerIdpForm(pageHtml, { idpField, idpValue });
+        const action = new URL(broker.action, pageUrl).toString();
+        const res = await this.http.request(action, {
+          method: 'POST',
+          body: new URLSearchParams(broker.data),
+        });
+        triedDescriptions.push(`${idpField}=${idpValue} → ${res.status}`);
+        if (res.status >= 300 && res.status < 400) {
+          const loc = res.headers.get('location');
+          if (loc) {
+            this.logger.info('aula.broker.idp_selection_succeeded', { idpField, idpValue });
+            return { nextUrl: new URL(loc, action).toString() };
+          }
+        }
+      }
+    }
+    throw new AulaLoginError(`Broker IdP selection failed; tried: ${triedDescriptions.join(', ')}`);
   }
 
   private assertMethodAvailable(method: AulaAuthMethod, available: AvailableAuthenticators): void {

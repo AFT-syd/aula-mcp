@@ -20,7 +20,7 @@
  */
 
 import { Buffer } from 'node:buffer';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -197,16 +197,12 @@ export class EncryptedFileTokenStore implements TokenStore {
   }
 
   async clear(): Promise<void> {
-    const empty: EncryptedEnvelope = {
-      version: 1,
-      alg: 'aes-256-gcm',
-      iv: '',
-      ct: '',
-      tag: '',
-    };
-    void empty; // we just delete the file
+    // Delete the file outright. `load()` returns null for missing files, so a
+    // post-clear `load()` rightly reports "no tokens" instead of throwing on
+    // an empty-string parse. The .key file is intentionally left in place so
+    // the next login can reuse the same encryption key.
     try {
-      await writeFile(this.filePath, '', 'utf8');
+      await unlink(this.filePath);
     } catch (e) {
       if (!isEnoent(e)) throw e;
     }
