@@ -22,40 +22,7 @@ import { runStatus } from './commands/status.ts';
 import { runTranscriptList, runTranscriptPrune, runTranscriptView } from './commands/transcript.ts';
 import { runWhoami } from './commands/whoami.ts';
 import { fmt } from './io.ts';
-
-interface ParsedArgs {
-  command?: string;
-  positional: string[];
-  flags: Record<string, string | boolean>;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = { positional: [], flags: {} };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a == null) continue;
-    if (a === '--' || a === '') continue;
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      if (eq >= 0) {
-        args.flags[a.slice(2, eq)] = a.slice(eq + 1);
-      } else {
-        const next = argv[i + 1];
-        if (next != null && !next.startsWith('-')) {
-          args.flags[a.slice(2)] = next;
-          i++;
-        } else {
-          args.flags[a.slice(2)] = true;
-        }
-      }
-    } else if (!args.command) {
-      args.command = a;
-    } else {
-      args.positional.push(a);
-    }
-  }
-  return args;
-}
+import { parseArgs } from './parse-args.ts';
 
 const HELP = `${fmt.bold('aula')} — MCP-friendly Aula client
 
