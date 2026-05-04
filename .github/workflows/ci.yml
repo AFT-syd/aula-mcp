@@ -47,3 +47,19 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Coverage report
+        run: bun test --coverage 2>&1 | tee coverage.txt
+        # Bun prints a per-file table + total. Output goes to job logs and
+        # is uploaded as an artifact for PR review without needing Codecov
+        # / Coveralls credentials. Graduate to those services if/when the
+        # coverage delta becomes worth automating.
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.txt
+          if-no-files-found: warn
+          retention-days: 14

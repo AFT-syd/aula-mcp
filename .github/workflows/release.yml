@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: bun-linux-x64
+            artifact: aula-linux-x64
+          - os: macos-latest
+            target: bun-darwin-arm64
+            artifact: aula-darwin-arm64
+          # Add bun-darwin-x64 / bun-windows-x64 here when there's a request.
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify (typecheck + lint + test)
+        run: |
+          pnpm typecheck
+          pnpm lint
+          bun test
+
+      - name: Compile CLI
+        run: |
+          bun build --compile \
+            --target=${{ matrix.target }} \
+            --outfile ${{ matrix.artifact }} \
+            apps/cli/src/index.ts
+
+      - name: Smoke-test the binary (Linux only — runner can execute)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./${{ matrix.artifact }} --help | head -5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # for accurate release-notes generation
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Inspect artifacts
+        run: ls -la artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## Install
+
+            Download the binary for your platform, mark executable, and put it on your PATH:
+
+            ```bash
+            # macOS arm64 (Apple Silicon)
+            curl -L -o aula https://github.com/Casperjuel/aula-mcp/releases/download/${{ github.ref_name }}/aula-darwin-arm64
+            chmod +x aula
+            mv aula /usr/local/bin/aula
+
+            # Linux x64
+            curl -L -o aula https://github.com/Casperjuel/aula-mcp/releases/download/${{ github.ref_name }}/aula-linux-x64
+            chmod +x aula
+            sudo mv aula /usr/local/bin/aula
+            ```
+
+            Then `aula login` to start. See the README for the full quickstart.
+
+            > Not affiliated with KMD A/S, Netcompany A/S, or the Aula consortium.
+            > *Aula* is a trademark of its respective owner.
+
+            ---
