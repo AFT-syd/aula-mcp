@@ -52,10 +52,15 @@ const mcp = new McpServer(
 
 registerTools(mcp, context);
 
-// Streamable HTTP transport. Stateless mode (no session persistence across
-// requests) — fine for single-user use; we can layer a session store later.
+// Streamable HTTP transport. Stateful mode — the SDK explicitly forbids
+// reusing a *stateless* transport across requests
+// ("Stateless transport cannot be reused across requests"), so we provide a
+// session-id generator and let the transport track per-session state. For
+// single-user use this is a single session that gets created on the first
+// request and reused thereafter.
 const transport = new WebStandardStreamableHTTPServerTransport({
   enableJsonResponse: true,
+  sessionIdGenerator: () => crypto.randomUUID(),
 });
 
 await mcp.connect(transport);
