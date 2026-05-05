@@ -9,9 +9,22 @@
 
 > Spørg Claude (eller en hvilken som helst MCP-klient) om dit barns skole eller daginstitution på dansk — og få et reelt svar baseret på live-data fra [Aula](https://www.aula.dk).
 
+> ⚠️ **Vigtigt: hvor dine data faktisk ender**
+>
+> Selve `aula-mcp`-serveren kører lokalt og sender intet videre på egen hånd. **Men hvis du bruger Claude (claude.ai, Claude Code, Claude Desktop), ChatGPT eller en anden cloud-LLM som client, sendes alt det LLM'en læser — beskeder, ugeplaner, børnenavne, datoer — videre til den provider (Anthropic, OpenAI osv.) for at den kan svare dig.** Sådan er MCP designet, og det er en bevidst beslutning du tager når du vælger client. Vi siger det her tydeligt, fordi det ikke er åbenlyst:
+>
+> | | Hvor det går hen |
+> | --- | --- |
+> | MitID-credentials og OAuth-tokens | Forbliver lokalt — macOS Keychain eller AES-256-GCM-krypteret fil. Bruges kun til at hente data fra Aula. |
+> | Selve dataen (beskeder, ugeplaner, børnenavne osv.) | Sendes til den MCP-client du vælger. Cloud-LLM → provider's servers (typisk USA). Lokal LLM → forbliver lokalt. |
+>
+> **Vil du have det 100 % lokalt?** Brug en lokal LLM som client: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), [llama.cpp](https://github.com/ggml-org/llama.cpp), Mistral via Hugging Face, etc. Alle taler MCP og kører på din egen hardware. `aula-mcp` er client-agnostic — valget af LLM er dit, ikke vores.
+>
+> **Hvorfor ikke bare bruge Aulas ICS-kalender?** Den dækker kun kalenderbegivenheder. Ikke beskeder fra lærerne, ugeplaner, opgaver, fravær eller huskelister. `aula-mcp` eksponerer hele Aula-API'et som typede MCP-tools, så du selv vælger hvad du henter — i naturligt sprog i stedet for at klikke rundt i en app.
+
 ![Claude Code spørger om næste uges ugeplan](./docs/demos/claude-code.gif)
 
-Aula's egen app er hverken hurtig eller brugervenlig når du bare skal vide hvad Lukas har i morgen, hvilke beskeder lærerne har sendt i dag, eller hvornår næste forældremøde er. Med `aula-mcp` kan du spørge i naturligt sprog — fra Claude på din telefon, fra dit terminal, fra Home Assistant, fra Siri Shortcuts, eller fra en automatisering der kører hver morgen kl. 7. Alt sammen kører på din egen maskine; intet forlader hjemmet.
+Aula's egen app er hverken hurtig eller brugervenlig når du bare skal vide hvad Lukas har i morgen, hvilke beskeder lærerne har sendt i dag, eller hvornår næste forældremøde er. Med `aula-mcp` kan du spørge i naturligt sprog — fra Claude på din telefon, fra dit terminal, fra Home Assistant, fra Siri Shortcuts, eller fra en automatisering der kører hver morgen kl. 7.
 
 ### Hvad åbner det op for?
 
@@ -37,7 +50,7 @@ Aula's egen app er hverken hurtig eller brugervenlig når du bare skal vide hvad
 
 ### Hvad er det rent teknisk?
 
-`aula-mcp` er en self-hosted **Model Context Protocol**-server til Aula, den platform alle danske grundskoler og mange daginstitutioner kører på. Den taler hele Aula API'et (beskeder, kalender, tilstedeværelse, opslag, notifikationer, ugeplaner) plus de tredjeparts-widgets skolerne lægger ovenpå (EasyIQ, EasyIQ SkolePortal, Meebook, Min Uddannelse, Systematic). Login er en fra-grunden port af MitID-protokollen — ingen headless browser, ingen Playwright, ingen SaaS-mellemmand. **Alle data forbliver på din egen computer.**
+`aula-mcp` er en self-hosted **Model Context Protocol**-server til Aula, den platform alle danske grundskoler og mange daginstitutioner kører på. Den taler hele Aula API'et (beskeder, kalender, tilstedeværelse, opslag, notifikationer, ugeplaner) plus de tredjeparts-widgets skolerne lægger ovenpå (EasyIQ, EasyIQ SkolePortal, Meebook, Min Uddannelse, Systematic). Login er en fra-grunden port af MitID-protokollen — ingen headless browser, ingen Playwright, ingen SaaS-mellemmand. **Dine MitID-credentials forbliver på din egen computer**; data du beder en cloud-LLM om at hente, sendes videre til den (se disclaimeren øverst).
 
 TypeScript + Bun + Hono. Åndelig efterfølger til [`scaarup/aula`](https://github.com/scaarup/aula) (Home Assistant Python-integrationen), tilrettet AI-agenter.
 
@@ -63,9 +76,9 @@ TypeScript + Bun + Hono. Åndelig efterfølger til [`scaarup/aula`](https://gith
 
 ## Sikkerhed — hvorfor du trygt kan køre det her lokalt
 
-Det her værktøj rører ved dine børns skoledata. Det skal du ikke gøre på autopilot, så her er præcis hvad det rør og hvad det ikke rør:
+Det her værktøj rører ved dine børns skoledata. Det skal du ikke gøre på autopilot, så her er præcis hvad serveren selv rør og ikke rør. Hvor selve dataindholdet ender, afhænger af hvilken LLM-klient du bruger — se disclaimeren øverst.
 
-- **Dine tokens bliver på din maskine.** På macOS gemmes de i systemets **Keychain** — samme sikre opbevaring som Safari og Mail bruger til adgangskoder, beskyttet af din login-adgangskode. På Linux/Windows krypteres de med **AES-256-GCM** i en fil under `~/.config/aula-mcp/`. Tokens forlader aldrig din computer.
+- **Dine MitID-credentials og OAuth-tokens bliver på din maskine.** På macOS gemmes de i systemets **Keychain** — samme sikre opbevaring som Safari og Mail bruger til adgangskoder, beskyttet af din login-adgangskode. På Linux/Windows krypteres de med **AES-256-GCM** i en fil under `~/.config/aula-mcp/`. Credentials forlader aldrig din computer.
 - **MCP-serveren lytter kun på `127.0.0.1` (loopback).** Den nægter at binde til en ekstern IP-adresse medmindre du eksplicit sætter `AULA_MCP_ALLOW_REMOTE=1` (og selv fronter den med en authenticeret reverse proxy). Som default er det strengt single-user, single-host: kun programmer der kører på *din* computer kan tilgå serveren.
 - **Ingen SaaS, ingen telemetri, ingen tredjepart.** Programmet kommunikerer kun med Aula's egne servere (`api.aula.dk`, `login.aula.dk`), MitID (`nemlog-in.mitid.dk`, `www.mitid.dk`) og — hvis din skole har dem — vendor-API'erne (EasyIQ, Meebook m.fl.). Der er ingen "phone home"-funktion, ingen analytics, ingen udleveret kopi af dine data nogen steder.
 - **MitID-loginnet sker direkte mellem din browser/computer og nemlog-in.dk.** Vi har implementeret protokollen i TypeScript, men selve godkendelsen (QR-koden i din MitID-app) går som altid igennem MitID's egen infrastruktur. Vi sidder ikke i midten — vi har bare oversat den dialog som Aula's officielle app fører.
@@ -434,7 +447,9 @@ Se [CONTRIBUTING.md](./CONTRIBUTING.md) for repo-layout, konventioner og en guid
 
 ## Privatliv & jura
 
-Alle tokens forbliver på din maskine. MCP-serveren kører på `localhost` som default — ingen eksterne afhængigheder. Wire-trace-værktøjet er opt-in (`--debug`-flag) og redaktér hvert kendt-hemmeligt felt.
+MitID-credentials og OAuth-tokens forbliver på din maskine. MCP-serveren selv kører på `localhost` som default — ingen eksterne afhængigheder, ingen telemetri, ingen analytics. Wire-trace-værktøjet er opt-in (`--debug`-flag) og redaktér hvert kendt-hemmeligt felt.
+
+**Vær opmærksom på at dataindholdet (beskeder, ugeplaner, børnenavne osv.) går videre til den MCP-klient du bruger.** Cloud-LLM'er som Claude eller ChatGPT modtager altså de svar serveren leverer — det er bygget ind i hvordan MCP fungerer. Vil du have alt 100 % lokalt, brug en lokal LLM som klient. Se disclaimeren øverst i README'en for detaljer.
 
 Den oprindelige Python-integration er til personlig/familiær brug af ens egne børns skoledata. Dette projekt er det samme — log ind som dig selv med din egen MitID; brug det ikke til at tilgå nogen andens konto.
 
