@@ -43,17 +43,19 @@ cd aula-mcp
 pnpm install
 
 # 1. Sanity check
-pnpm typecheck && pnpm lint && bun test
+pnpm typecheck && pnpm lint && pnpm test
 
 # 2. First-time MitID login (QR code with the MitID app)
-bun apps/cli/src/index.ts login
+pnpm login
 
 # 3. Health-check every Aula endpoint
-bun apps/cli/src/index.ts doctor
+pnpm doctor
 
 # 4. Run the MCP server (http://127.0.0.1:7878/mcp)
-bun packages/mcp-server/src/server.ts
+pnpm mcp
 ```
+
+Most CLI commands have a top-level shortcut: `pnpm login`, `pnpm doctor`, `pnpm whoami`, `pnpm status`, `pnpm logout`. For anything else, `pnpm aula <command>` forwards to the CLI (e.g. `pnpm aula transcript list`, `pnpm aula log --last 5`).
 
 That's it — you have a running, single-user MCP server fronting Aula on your laptop.
 
@@ -73,7 +75,7 @@ The `doctor` command walks every read endpoint and reports per-call status with 
 
 ```sh
 # 1. Server running in one terminal
-bun packages/mcp-server/src/server.ts
+pnpm mcp
 
 # 2. Register the server with Claude Code, one-time
 claude mcp add --transport http aula http://127.0.0.1:7878/mcp
@@ -166,7 +168,7 @@ aula --help
 | `aula transcript` | Inspect captured `--debug` transcripts; `prune` keeps the last N (default 10). |
 | `aula logout` | Clears stored tokens. The encryption key file is kept so the next login reuses it. |
 
-Full help with examples: `bun apps/cli/src/index.ts --help`
+Full help with examples: `pnpm aula --help`
 
 ![aula --help](./docs/demos/help.gif)
 
@@ -266,9 +268,11 @@ pnpm install          # install everything
 pnpm typecheck        # tsc -p tsconfig.json --noEmit
 pnpm lint             # biome check .
 pnpm lint:fix         # biome check --write .
-bun test              # bun:test suites (209 cases)
-bun test --coverage   # also produces a coverage table
+pnpm test             # bun:test suites (209 cases)
+pnpm test:watch       # re-run on change
 ```
+
+All other top-level scripts: `pnpm aula <cmd>`, `pnpm mcp`, plus the per-command shortcuts (`pnpm login`, `pnpm doctor`, `pnpm whoami`, `pnpm status`, `pnpm logout`).
 
 ---
 
