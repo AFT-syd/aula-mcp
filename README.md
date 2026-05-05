@@ -169,12 +169,35 @@ Den simpleste vej. Compile-til-én-binary og kør den under systemd.
 # Byg en standalone binary (~50 MB)
 bun build --compile --outfile dist/aula-mcp packages/mcp-server/src/server.ts
 
-# Kopiér til din server (Pi, NAS, VPS, what have you)
+# Kopiér til din server (Pi, NAS, VPS)
 scp dist/aula-mcp aula:/usr/local/bin/aula-mcp
-
-# Kør første gang manuelt for at oprette tokens via login (kræver MitID)
-# — eller log ind på din laptop og kopiér tokens.json over
 ```
+
+**Tokens på serveren** — to veje, vælg den der passer dig:
+
+A. *Log ind direkte på serveren via SSH.* QR-koderne renderes i SSH-sessionen, scan med MitID-appen på telefonen. Kører på enhver maskine du kan ssh'e ind på med en normal TTY.
+
+```sh
+ssh aula
+aula login
+```
+
+B. *Eksportér tokens fra din Mac (eller fra hvor du allerede er logget ind).* macOS Keychain kan ikke flyttes mellem maskiner, så `aula tokens export` re-krypterer dem til en bærbar fil-bundle.
+
+```sh
+# På din Mac
+aula tokens export ~/aula-bundle
+
+# Flyt til serveren — bundle indeholder live credentials, behandl som
+# adgangskoder. SSH krypterer i transit.
+scp ~/aula-bundle/tokens.json ~/aula-bundle/.key \
+    aula:/var/lib/aula-mcp/
+
+# Slet bundle på din Mac når du er færdig
+rm -rf ~/aula-bundle
+```
+
+Eller på serveren: `aula tokens import ~/aula-bundle` hvis du vil have CLI'en til at lægge filerne det rigtige sted.
 
 Eksempel `systemd`-unit i `/etc/systemd/system/aula-mcp.service`:
 
@@ -405,7 +428,7 @@ Alle andre top-level-scripts: `pnpm aula <cmd>`, `pnpm mcp`, plus per-kommando-g
 
 ## Bidrag
 
-Se [CONTRIBUTING.md](./CONTRIBUTING.md) for repo-layout, konventioner og en guide til at tilføje integrations-plugins. Bidragydere accepterer at følge [Code of Conduct](./CODE_OF_CONDUCT.md). Sikkerhedsproblemer: skriv venligst til **cj@signifly.com** i stedet for at åbne en offentlig issue — se [SECURITY.md](./SECURITY.md).
+Se [CONTRIBUTING.md](./CONTRIBUTING.md) for repo-layout, konventioner og en guide til at tilføje integrations-plugins. Bidragydere accepterer at følge [Code of Conduct](./CODE_OF_CONDUCT.md). Sikkerhedsproblemer: skriv venligst til **info@casperjuel.dk** i stedet for at åbne en offentlig issue — se [SECURITY.md](./SECURITY.md).
 
 ---
 

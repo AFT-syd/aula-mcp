@@ -20,6 +20,7 @@ import { runLog } from './commands/log.ts';
 import { runLogin } from './commands/login.ts';
 import { runLogout } from './commands/logout.ts';
 import { runStatus } from './commands/status.ts';
+import { runTokensExport, runTokensImport } from './commands/tokens.ts';
 import { runTranscriptList, runTranscriptPrune, runTranscriptView } from './commands/transcript.ts';
 import { runWhoami } from './commands/whoami.ts';
 import { fmt } from './io.ts';
@@ -34,6 +35,8 @@ ${fmt.bold('Usage')}:
   aula whoami [--json]
   aula doctor [--json] [--verbose]
   aula log [--last N] [--json]
+  aula tokens export <dir>
+  aula tokens import <dir>
   aula transcript list [--json]
   aula transcript view <file> [--json]
   aula transcript prune [--keep N] [--dry-run]
@@ -51,6 +54,11 @@ ${fmt.bold('Notes')}:
     when reporting issues.
   • aula doctor walks every read endpoint and reports per-call status.
   • aula log shows recent login attempts (success/failure + timestamps).
+  • aula tokens export <dir>  — write tokens.json + .key into <dir> for
+    transfer (always re-encrypts with a fresh AES-GCM key). Pair with
+    aula tokens import <dir> on the other machine, or scp the two files
+    into a server's AULA_MCP_DIR. Use to move from macOS Keychain to a
+    self-hosted Linux box.
 `;
 
 async function main(): Promise<void> {
@@ -93,6 +101,31 @@ async function main(): Promise<void> {
         ...(typeof last === 'number' && Number.isFinite(last) ? { last } : {}),
         json: args.flags.json === true,
       });
+      break;
+    }
+    case 'tokens': {
+      const sub = args.positional[0];
+      const dir = args.positional[1];
+      switch (sub) {
+        case 'export':
+          if (!dir) {
+            process.stderr.write('Usage: aula tokens export <dir>\n');
+            process.exit(2);
+          }
+          await runTokensExport({ outDir: dir });
+          break;
+        case 'import':
+          if (!dir) {
+            process.stderr.write('Usage: aula tokens import <dir>\n');
+            process.exit(2);
+          }
+          await runTokensImport({ inDir: dir });
+          break;
+        default:
+          process.stderr.write(`Unknown tokens subcommand: ${sub ?? '<missing>'}\n`);
+          process.stderr.write('Try: aula tokens {export <dir>|import <dir>}\n');
+          process.exit(2);
+      }
       break;
     }
     case 'transcript': {

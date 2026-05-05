@@ -13,11 +13,27 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { EncryptedFileTokenStore, KeychainTokenStore, type TokenStore } from '@aula-mcp/aula-auth';
 
-export const AULA_MCP_DIR = process.env.AULA_MCP_DIR ?? join(homedir(), '.config', 'aula-mcp');
-export const TOKEN_FILE = join(AULA_MCP_DIR, 'tokens.json');
-export const KEY_FILE = join(AULA_MCP_DIR, '.key');
-export const TRANSCRIPT_DIR = join(AULA_MCP_DIR, 'transcripts');
-export const LOGIN_LOG_PATH = join(AULA_MCP_DIR, 'login-log.jsonl');
+/**
+ * Resolve the config dir from `AULA_MCP_DIR` *every call* (not at module
+ * load) so env-var overrides set after import — by tests, by `aula tokens
+ * import` running with a different target, by long-running shells — are
+ * actually picked up.
+ */
+export function aulaMcpDir(): string {
+  return process.env.AULA_MCP_DIR ?? join(homedir(), '.config', 'aula-mcp');
+}
+export function tokenFile(): string {
+  return join(aulaMcpDir(), 'tokens.json');
+}
+export function keyFile(): string {
+  return join(aulaMcpDir(), '.key');
+}
+export function transcriptDir(): string {
+  return join(aulaMcpDir(), 'transcripts');
+}
+export function loginLogPath(): string {
+  return join(aulaMcpDir(), 'login-log.jsonl');
+}
 
 /** Display path that survives both backends — KeychainTokenStore.path
  *  returns "keychain://aula-mcp/tokens" so commands that print location
@@ -31,12 +47,12 @@ export function defaultStore(): CliTokenStore {
     return new KeychainTokenStore();
   }
   return new EncryptedFileTokenStore({
-    filePath: TOKEN_FILE,
-    keyFilePath: KEY_FILE,
+    filePath: tokenFile(),
+    keyFilePath: keyFile(),
   });
 }
 
 export function transcriptPath(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-  return join(TRANSCRIPT_DIR, `login-${stamp}.jsonl`);
+  return join(transcriptDir(), `login-${stamp}.jsonl`);
 }

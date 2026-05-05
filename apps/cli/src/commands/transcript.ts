@@ -8,7 +8,7 @@ import { readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatTraceText, type WireEntry } from '@aula-mcp/aula-auth';
 import { fail, fmt, info, ok, printJson, warn } from '../io.ts';
-import { TRANSCRIPT_DIR } from '../store.ts';
+import { transcriptDir } from '../store.ts';
 
 export interface TranscriptViewArgs {
   file: string;
@@ -51,10 +51,10 @@ export async function runTranscriptList(args: TranscriptListArgs = {}): Promise<
     return;
   }
   if (files.length === 0) {
-    info(`No transcripts in ${fmt.dim(TRANSCRIPT_DIR)}.`);
+    info(`No transcripts in ${fmt.dim(transcriptDir())}.`);
     return;
   }
-  info(`${files.length} transcript(s) in ${fmt.dim(TRANSCRIPT_DIR)}:`);
+  info(`${files.length} transcript(s) in ${fmt.dim(transcriptDir())}:`);
   for (const f of files) {
     process.stdout.write(
       `  ${fmt.dim(f.modified.toISOString())}  ${formatBytes(f.size)}  ${f.path}\n`,
@@ -93,14 +93,14 @@ async function listTranscriptFiles(): Promise<
 > {
   let names: string[];
   try {
-    names = await readdir(TRANSCRIPT_DIR);
+    names = await readdir(transcriptDir());
   } catch {
     return [];
   }
   const files: Array<{ path: string; size: number; modified: Date }> = [];
   for (const name of names) {
     if (!name.endsWith('.jsonl')) continue;
-    const path = join(TRANSCRIPT_DIR, name);
+    const path = join(transcriptDir(), name);
     const s = await stat(path).catch(() => null);
     if (!s) continue;
     files.push({ path, size: s.size, modified: s.mtime });

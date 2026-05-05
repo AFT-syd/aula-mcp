@@ -11,7 +11,7 @@
 
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { LOGIN_LOG_PATH } from './store.ts';
+import { loginLogPath } from './store.ts';
 
 export interface LoginLogEntry {
   /** ISO 8601 timestamp. */
@@ -25,14 +25,15 @@ export interface LoginLogEntry {
 }
 
 export async function appendLoginLog(entry: LoginLogEntry): Promise<void> {
-  await mkdir(dirname(LOGIN_LOG_PATH), { recursive: true });
-  await appendFile(LOGIN_LOG_PATH, `${JSON.stringify(entry)}\n`, 'utf8');
+  const path = loginLogPath();
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, `${JSON.stringify(entry)}\n`, 'utf8');
 }
 
 export async function readLoginLog(): Promise<LoginLogEntry[]> {
   let raw: string;
   try {
-    raw = await readFile(LOGIN_LOG_PATH, 'utf8');
+    raw = await readFile(loginLogPath(), 'utf8');
   } catch (e) {
     if ((e as { code?: string }).code === 'ENOENT') return [];
     throw e;

@@ -4,7 +4,7 @@
   "private": true,
   "description": "MCP server for the Danish Aula school platform — TypeScript port of scaarup/aula.",
   "license": "MIT",
-  "author": "Casper Juel <cj@signifly.com>",
+  "author": "Casper Juel <info@casperjuel.dk>",
   "repository": {
     "type": "git",
     "url": "https://github.com/Casperjuel/aula-mcp.git"
