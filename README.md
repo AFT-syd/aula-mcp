@@ -9,13 +9,7 @@
 
 **Hvad det her er — og hvad det *ikke* er:**
 
-```
-MCP-klient (LLM)  ◄─MCP─►  aula-mcp  ◄─HTTPS─►  Aula
-Claude / ChatGPT /         kører lokalt
-Ollama / Cursor / ...      på din maskine
-```
-
-`aula-mcp` er **kun** den midterste boks: et interface mellem Aula og hvad end du vælger at koble på. **LLM'en er ikke en del af projektet.** Du vælger selv klient (Claude Code, Claude Desktop, ChatGPT, Cursor, Ollama, LM Studio osv.), og den kører hvor den nu kører — i Anthropic/OpenAI's cloud, eller lokalt hvis du bruger Ollama el.lign.
+`aula-mcp` er en server der sidder mellem en MCP-klient (LLM) og Aula — et interface, ikke meget mere. **LLM'en er ikke en del af projektet.** Du vælger selv klient (Claude Code, Claude Desktop, ChatGPT, Cursor, Ollama, LM Studio osv.), og den kører hvor den nu kører — i Anthropic/OpenAI's cloud, eller lokalt hvis du bruger Ollama el.lign.
 
 **Projektet er altså ikke en garanti for at børnenes data kun bliver lokalt.** Om dataen forbliver lokal afhænger 100 % af hvilken klient du tilkobler — det er dit eget ansvar, ikke noget `aula-mcp` selv kan love.
 
