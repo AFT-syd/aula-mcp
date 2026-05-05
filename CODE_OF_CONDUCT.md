@@ -10,7 +10,7 @@ unrelated to the project.
 
 ## Reporting
 
-Email **cj@signifly.com** privately. Reports stay between you and the
+Email **info@casperjuel.dk** privately. Reports stay between you and the
 maintainer unless you explicitly want them public. We take harassment, abuse,
 and discrimination seriously, and so should you.
 
