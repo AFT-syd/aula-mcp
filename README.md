@@ -2,92 +2,156 @@
 
 [![CI](https://github.com/Casperjuel/aula-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Casperjuel/aula-mcp/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Bun](https://img.shields.io/badge/Bun-≥%201.3-black?logo=bun)](https://bun.sh)
+[![pnpm](https://img.shields.io/badge/pnpm-≥%2010-F69220?logo=pnpm)](https://pnpm.io)
+[![MCP](https://img.shields.io/badge/Model_Context_Protocol-Streamable_HTTP-6B5BFF)](https://modelcontextprotocol.io)
+[![Tests](https://img.shields.io/badge/tests-209%20pass-brightgreen)](#development)
 
-MCP server for [Aula](https://www.aula.dk) — the Danish school communication platform — so AI agents can read your kid's messages, calendar, ugeplaner, opgaver, and huskeliste through a typed interface.
+> Ask Claude (or any MCP client) about your kid's school in plain Danish — and have it actually answer, with live data from [Aula](https://www.aula.dk).
 
-TypeScript port of [`scaarup/aula`](https://github.com/scaarup/aula). Owns its own MitID auth (no headless browser, no Playwright). Exposes everything as Model Context Protocol tools over a Hono Streamable-HTTP server. Runs on Bun.
+![Claude Code asking about next week's school plan](./docs/demos/claude-code.gif)
 
-> **Disclaimer.** This project is not affiliated with, endorsed by, or sponsored by KMD A/S, Netcompany A/S, or the Aula consortium. *Aula* is a trademark of its respective owner; the name is used here solely to identify what this software talks to. All Aula data stays on your machine — there is no SaaS layer.
+`aula-mcp` is a self-hosted **Model Context Protocol** server for Aula, the platform every Danish primary school runs on. It speaks the full Aula API (messages, calendar, presence, posts, notifications, ugeplaner) plus the third-party widgets schools layer on top (EasyIQ, EasyIQ SkolePortal, Meebook, Min Uddannelse, Systematic). Auth is a from-scratch port of the MitID protocol — no headless browser, no Playwright, no SaaS layer. All Aula data stays on your machine.
 
-## Status
+TypeScript + Bun + Hono. Spiritual successor to [`scaarup/aula`](https://github.com/scaarup/aula) (the Home Assistant Python integration), reshaped for AI agents.
 
-**v0.1 — works end-to-end on live Aula.** MitID login (APP method, QR), token refresh, the full Aula read API, the `aula.discover` MCP manifest, and live ugeplan retrieval (EasyIQ SkolePortal verified) are all running against production Aula traffic.
+---
 
-| Layer | What it does | Status |
-| ----- | ------------ | ------ |
-| `@aula-mcp/aula-auth` | MitID (APP / CODE_TOKEN / PASSWORD) + custom 3072-bit SRP-6a + OAuth/SAML chain + token store (file or macOS Keychain) + wire-trace debug | ✅ unit-tested + live-verified |
-| `@aula-mcp/aula-client` | Aula API (profiles, presence, calendar, messages, notifications, posts) with version probing + widget token manager (#311 fix) + integration plugins (EasyIQ, EasyIQ SkolePortal, Meebook, Min Uddannelse, Systematic) | ✅ unit-tested |
-| `@aula-mcp/mcp-server` | Hono + `@modelcontextprotocol/sdk` (`WebStandardStreamableHTTPServerTransport`) + `aula.discover` (with per-school provider auto-detection + `usage` hints for the agent) + 11 capability tools + raw-request escape hatch | ✅ unit-tested + live-verified with Claude Code |
-| `apps/cli` | `aula login / status / whoami / doctor / log / transcript / logout`, MitID QR rendering, `--debug` wire-transcript capture | ✅ unit-tested |
+## Table of contents
 
-**209 passing tests · CI green · daily MitID drift canary running.**
+- [Quickstart](#quickstart)
+- [Connect to Claude Code (or claude.ai)](#connect-to-claude-code-or-claudeai)
+- [What's inside the manifest](#whats-inside-the-manifest)
+- [CLI reference](#cli-reference)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Bake-ins from upstream Aula issues](#bake-ins-from-upstream-aula-issues)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Contributing](#contributing)
+- [Privacy & legal](#privacy--legal)
+
+---
 
 ## Quickstart
 
-Requires **[Bun](https://bun.sh) ≥ 1.3** and **[pnpm](https://pnpm.io) ≥ 10**. macOS or Linux. Node 22 is installed only for `tsc` type-checking.
+Requires **[Bun](https://bun.sh) ≥ 1.3** and **[pnpm](https://pnpm.io) ≥ 10**. macOS or Linux.
 
-```bash
+```sh
 git clone git@github.com:Casperjuel/aula-mcp.git
 cd aula-mcp
 pnpm install
 
-# verify the build is healthy
+# 1. Sanity check
 pnpm typecheck && pnpm lint && bun test
 
-# first-time MitID login (uses the MitID app via QR code by default)
-pnpm --filter @aula-mcp/cli dev login
+# 2. First-time MitID login (QR code with the MitID app)
+bun apps/cli/src/index.ts login
 
-# health-check the whole pipeline
-pnpm --filter @aula-mcp/cli dev doctor
+# 3. Health-check every Aula endpoint
+bun apps/cli/src/index.ts doctor
 
-# run the MCP server (listens on http://127.0.0.1:7878/mcp)
-pnpm --filter @aula-mcp/mcp-server dev
+# 4. Run the MCP server (http://127.0.0.1:7878/mcp)
+bun packages/mcp-server/src/server.ts
 ```
 
-Then point any MCP client at `http://127.0.0.1:7878/mcp`. See [`examples/claude-config/`](./examples/claude-config/) for a Claude Code / Claude Desktop snippet.
+That's it — you have a running, single-user MCP server fronting Aula on your laptop.
 
-### Connecting to Claude Code
+The `doctor` command walks every read endpoint and reports per-call status with timing. It's the fastest "is this thing actually working?" check:
+
+![aula doctor walking every endpoint](./docs/demos/doctor.gif)
+
+`whoami` confirms which identity the tokens are for and which children come back from `getProfilesByLogin`:
+
+![aula whoami showing identity + kids](./docs/demos/whoami.gif)
+
+---
+
+## Connect to Claude Code (or claude.ai)
+
+### Claude Code (recommended for local use)
 
 ```sh
-# 1. Start the server (leave running)
+# 1. Server running in one terminal
 bun packages/mcp-server/src/server.ts
 
-# 2. Register it with Claude Code (one-time)
+# 2. Register the server with Claude Code, one-time
 claude mcp add --transport http aula http://127.0.0.1:7878/mcp
 
-# 3. In any Claude Code session
-/mcp                # confirm `aula` shows as connected
+# 3. In any Claude Code session, confirm it's connected
+/mcp
 ```
 
 Then prompt naturally — kids' names get fuzzy-matched against the discover manifest, no IDs needed:
 
-> hvad står der på ugeplanen næste uge for theo
+> *hvad står der på ugeplanen næste uge for theo*
 
 Claude calls `aula.discover` once, picks the right ugeplan vendor for your school from `detectedWidgets`, and answers in your language with Danish-formatted dates.
 
-### Connecting to claude.ai (web)
+### Claude Desktop
 
-The web UI requires a public HTTPS URL — `127.0.0.1` won't work, the connection happens server-side from Anthropic's cloud. For a temporary tunnel:
+Drop the snippet from [`examples/claude-config/claude-desktop.json`](./examples/claude-config/claude-desktop.json) into `~/Library/Application Support/Claude/claude_desktop_config.json`.
+
+### claude.ai (web)
+
+The web UI requires a public HTTPS URL — `127.0.0.1` won't work, the connection happens server-side from Anthropic's cloud. For a quick test:
 
 ```sh
 cloudflared tunnel --url http://127.0.0.1:7878
-# → use the printed https://…trycloudflare.com URL + /mcp
+# → https://<random>.trycloudflare.com — paste with `/mcp` appended
 ```
 
-⚠️ The tunnel URL is publicly reachable while running — anyone who guesses it controls your Aula tokens. Fine for a quick test, don't leave it up. For permanent setup, deploy the server to a real host behind your own auth (Caddy / authenticated reverse proxy).
+> ⚠️ **The tunnel URL is publicly reachable while running** — anyone who guesses it controls your Aula tokens. Fine to demo, don't leave it up. For permanent setup, deploy the server to a real host behind your own auth (Caddy / authenticated reverse proxy).
+
+---
+
+## What's inside the manifest
+
+Agents call `aula.discover` once and reuse the result for the rest of the session. The manifest tells the agent who the user is, which children they can act on behalf of, which third-party widgets the schools have provisioned, and which subordinate MCP tools to call:
+
+![aula.discover manifest pretty-printed](./docs/demos/discover.gif)
+
+Shape:
+
+```ts
+{
+  user: { name, username, identityName? },
+  children: [{ id, name, userId?, institution: { id, name?, code? } }],
+  apiVersion: 23,
+  tokens: { expires_at, seconds_remaining },
+  detectedWidgets: ['0001', '0029', '0030'],   // from Aula's pageConfiguration
+  capabilities: {
+    profiles:      { summary, tools: ['aula.profiles.list'] },
+    presence:      { summary, tools: ['aula.presence.today'] },
+    calendar:      { summary, tools: ['aula.calendar.events'] },
+    messages:      { summary, tools: ['aula.messages.list_threads', 'aula.messages.get_thread'] },
+    notifications: { summary, tools: ['aula.notifications.list'] },
+    posts:         { summary, tools: ['aula.posts.list'] },
+    ugeplan:       { summary, tools: ['aula.ugeplan.easyiq'] },          // detected provider only
+    opgaver:       { summary, tools: ['aula.opgaver.minuddannelse'] },
+    ugebrev:       { summary, tools: ['aula.ugebrev.minuddannelse'] },
+    huskelisten:   { summary, tools: ['aula.huskelisten.systematic'] }
+  },
+  usage: {
+    cache, nameResolution, pickOne, timeWindows, language
+  },
+  rawRequestEnabled: false
+}
+```
+
+`capabilities[area].tools[0]` is always the right tool to call — when a school's widgets are detected we list only the matching provider, so the agent doesn't fan out across vendors. The inline `usage` block tells the agent how to behave (cache the manifest, fuzzy-match kid names, default to Europe/Copenhagen, reply in the user's language).
+
+---
 
 ## CLI reference
 
 ```
-aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug]
-           [--transcript <file>]
+aula login [--username <user>] [--method APP|CODE_TOKEN] [--debug] [--transcript <file>]
 aula status [--json]
 aula whoami [--json]
 aula doctor [--json] [--verbose]
 aula log [--last N] [--json]
-aula transcript list [--json]
-aula transcript view <file> [--json]
-aula transcript prune [--keep N] [--dry-run]
+aula transcript {list|view <file>|prune} [--json] [--keep N] [--dry-run]
 aula logout
 aula --help
 ```
@@ -97,10 +161,18 @@ aula --help
 | `aula login` | Walks the full MitID flow (APP method by default — scans QR with the MitID app). Saves tokens. `--debug` captures a sanitised wire transcript so failures are diagnosable. |
 | `aula status` | Prints token presence, expiry, and active identity. Doesn't hit the network. Exit code 1 when no tokens. |
 | `aula whoami` | Loads tokens (refreshes if needed), calls `getProfilesByLogin` + `getProfileContext`. Smoke test that the auth + client pipeline works end-to-end. |
-| `aula doctor` | Walks every read endpoint (profiles, profile context, presence, messages, notifications, posts, widget token issuance) and reports per-call status with timing. The fastest "is this thing actually working?" check. `--verbose` dumps the wire transcript inline on failure. |
-| `aula log` | Prints recent login attempts (success/failure, timestamps, error class). |
-| `aula transcript {list,view,prune}` | Inspect captured `--debug` transcripts; prune old ones (default keep 10). |
-| `aula logout` | Clears stored tokens. The encryption key file (file backend) is kept so the next login reuses it. |
+| `aula doctor` | Walks every read endpoint and reports per-call status with timing. The fastest "is this thing actually working?" check. `--verbose` dumps the wire transcript inline on failure. |
+| `aula log` | Recent login attempts (success/failure, timestamps, error class). |
+| `aula transcript` | Inspect captured `--debug` transcripts; `prune` keeps the last N (default 10). |
+| `aula logout` | Clears stored tokens. The encryption key file is kept so the next login reuses it. |
+
+Full help with examples: `bun apps/cli/src/index.ts --help`
+
+![aula --help](./docs/demos/help.gif)
+
+---
+
+## Configuration
 
 ### Token storage
 
@@ -109,86 +181,52 @@ aula --help
 | macOS | Keychain (`security` CLI; service `aula-mcp`, account `tokens`) | `AULA_MCP_NO_KEYCHAIN=1` falls back to the file backend |
 | Linux / Windows | AES-256-GCM-encrypted file at `~/.config/aula-mcp/tokens.json` | `AULA_MCP_KEY=<hex|passphrase>` for the encryption key (else generated at `~/.config/aula-mcp/.key`, `chmod 600`) |
 
+### Server environment variables
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `AULA_MCP_PORT` | `7878` | Bind port. |
+| `AULA_MCP_HOST` | `127.0.0.1` | Bind interface. Refuses non-loopback unless `AULA_MCP_ALLOW_REMOTE=1`. |
+| `AULA_MCP_DIR` | `~/.config/aula-mcp` | Config dir (file backend + transcripts + login log). |
+| `AULA_MCP_RAW=1` | off | Enables the `aula.raw_request` escape-hatch tool. |
+| `AULA_MCP_LOG=1` | off | Verbose console logs from the auth/client layers. |
+| `AULA_MCP_ALLOW_REMOTE=1` | off | Allow binding to non-loopback addresses (e.g. behind a reverse proxy). |
+
 ### Wire transcripts
 
 `--debug` mode tees a JSONL transcript of every HTTP request/response to `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl`. Cookies, OAuth/SAML payloads, MitID auth codes, passwords, M1, flowValueProof, the `access_token` query param, and other secret fields are all redacted (`<redacted N chars>`). The transcript is safe to paste into a GitHub issue.
 
-## Demo
+`aula transcript view <file>` pretty-prints one of these.
 
-Asking Claude Code about next week's school plan — one prompt, one MCP server, real Aula data:
-
-![Claude Code session](./docs/demos/claude-code.gif)
-
-Behind the scenes, the CLI ships a `doctor` that walks every Aula endpoint:
-
-![aula doctor](./docs/demos/doctor.gif)
-
-`whoami` shows the active identity + which children are tied to it:
-
-![aula whoami](./docs/demos/whoami.gif)
-
-Full CLI help and the shape of the `aula.discover` manifest:
-
-![aula --help](./docs/demos/help.gif)
-![discover manifest](./docs/demos/discover.gif)
-
-Recordings are made with [VHS](https://github.com/charmbracelet/vhs); the children's names + institution codes shown above are synthetic. See [`docs/demos/`](./docs/demos/) for the tapes and the PII rules.
-
-## The `aula.discover` tool
-
-Agents call `aula.discover` once and get a typed manifest:
-
-```ts
-{
-  user: { name, username, identityName? },
-  children: [{ id, name, userId?, institution: { id, name?, code? } }],
-  apiVersion: 23,
-  tokens: { expires_at, seconds_remaining },
-  detectedWidgets: ['0001', '0029', '0030'],   // from pageConfiguration
-  capabilities: {
-    profiles:      { summary, tools: ['aula.profiles.list'] },
-    presence:      { summary, tools: ['aula.presence.today'] },
-    calendar:      { summary, tools: ['aula.calendar.events'] },
-    messages:      { summary, tools: ['aula.messages.list_threads', 'aula.messages.get_thread'] },
-    notifications: { summary, tools: ['aula.notifications.list'] },
-    posts:         { summary, tools: ['aula.posts.list'] },
-    ugeplan:       { summary, tools: ['aula.ugeplan.easyiq'] },     // detected first
-    opgaver:       { summary, tools: ['aula.opgaver.minuddannelse'] },
-    ugebrev:       { summary, tools: ['aula.ugebrev.minuddannelse'] },
-    huskelisten:   { summary, tools: ['aula.huskelisten.systematic'], notes: '<not detected>' }
-  },
-  rawRequestEnabled: false
-}
-```
-
-The capability tool lists are reordered by `detectedWidgets` so the school's actually-configured providers come first. Capabilities for which no widget is detected get an inline `notes` line. New integrations become discoverable without changing the agent.
-
-## Using the libraries from Node (no Bun)
-
-The runtime split:
-
-- `@aula-mcp/aula-auth` and `@aula-mcp/aula-client` use only Web standards + `node:crypto` + `node:child_process` (for the macOS Keychain). They run on Node ≥ 20 as well as Bun.
-- `@aula-mcp/mcp-server` uses `Bun.serve` and is Bun-only.
-- `apps/cli` uses Bun's TS support and `bun build --compile` for binaries.
-
-To use the libraries from a Node script, see [`examples/script/`](./examples/script/).
+---
 
 ## Architecture
 
 ```
 packages/
-  aula-auth/    — MitID + SRP + OAuth/SAML + token store + wire-trace
-  aula-client/  — Aula API + integration plugins
-  mcp-server/   — Hono + @modelcontextprotocol/sdk
+  aula-auth/    — MitID + 3072-bit SRP-6a + OAuth/SAML chain + token store + wire-trace
+  aula-client/  — Aula REST API + version probing + integration plugins
+  mcp-server/   — Hono + @modelcontextprotocol/sdk + aula.discover + 11 capability tools
 apps/
   cli/          — aula login/status/whoami/doctor/log/transcript/logout
 ```
 
-Cross-package imports use the workspace name (`@aula-mcp/aula-auth`) — Bun resolves `.ts` directly, so there's no build step in dev. `tsc -p tsconfig.json --noEmit` runs in CI for type-checking only.
+Cross-package imports use the workspace name (`@aula-mcp/aula-auth`); Bun resolves `.ts` directly so there's no build step in dev. `tsc -p tsconfig.json --noEmit` runs in CI for type-checking only.
+
+| Layer | Status | Notes |
+| ----- | ------ | ----- |
+| `@aula-mcp/aula-auth` | ✅ unit-tested + live-verified | MitID APP + CODE_TOKEN + PASSWORD; macOS Keychain or AES-GCM file. |
+| `@aula-mcp/aula-client` | ✅ unit-tested | Native Aula API + EasyIQ / EasyIQ SkolePortal / Meebook / Min Uddannelse / Systematic plugins. |
+| `@aula-mcp/mcp-server` | ✅ unit-tested + live-verified with Claude Code | Streamable HTTP transport, stateful session. Single-user, loopback by default. |
+| `apps/cli` | ✅ unit-tested | QR rendering, debug transcripts, JSONL login log. |
+
+`@aula-mcp/aula-auth` and `@aula-mcp/aula-client` use only Web standards + `node:crypto` + `node:child_process` — they run on Node ≥ 20 as well as Bun. The MCP server uses `Bun.serve` and is Bun-only. CLI uses Bun's TS support and ships via `bun build --compile`. To use the libraries from a Node script, see [`examples/script/`](./examples/script/).
 
 Detailed design rationale: [docs/architecture.md](./docs/architecture.md).
 
-## Bake-ins from upstream issues
+---
+
+## Bake-ins from upstream Aula issues
 
 The Python integration has years of accumulated lessons in its issue tracker. We pre-empted the top ones:
 
@@ -201,6 +239,8 @@ The Python integration has years of accumulated lessons in its issue tracker. We
 | [#290, #351](https://github.com/scaarup/aula/issues/351) — `password`/`token` required for auth methods that don't need them | `AulaLoginOptions` only demands fields per chosen `method`. APP method needs no password. |
 | [PR #352](https://github.com/scaarup/aula/pull/352) — EasyIQ SkolePortal (widget 0128) | Implemented as `EasyIqSkoleportalClient` + `aula.ugeplan.easyiq_skoleportal` MCP tool. Per-child auth + Danish-entity decode. |
 | Sensitive messages (`status.code` 403) | Surfaced as the typed `AulaStepUpRequiredError`; MCP tool returns a structured `step_up_required` JSON instead of empty data. |
+
+---
 
 ## Troubleshooting
 
@@ -217,28 +257,36 @@ The Python integration has years of accumulated lessons in its issue tracker. We
 
 When something fails, the JSONL transcript at `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl` (after `--debug`) is the first thing to look at. `aula transcript view <file>` pretty-prints it.
 
+---
+
 ## Development
 
-```bash
+```sh
 pnpm install          # install everything
 pnpm typecheck        # tsc -p tsconfig.json --noEmit
 pnpm lint             # biome check .
 pnpm lint:fix         # biome check --write .
-bun test              # run the bun:test suites (209 cases at last count)
+bun test              # bun:test suites (209 cases)
 bun test --coverage   # also produces a coverage table
 ```
 
-A full guide for adding integration plugins or porting more endpoints is in [CONTRIBUTING.md](./CONTRIBUTING.md).
+---
 
-## Privacy
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for repo layout, conventions, and a guide for adding integration plugins. Contributors agree to follow the [Code of Conduct](./CODE_OF_CONDUCT.md). Security issues: please email **cj@signifly.com** rather than opening a public issue — see [SECURITY.md](./SECURITY.md).
+
+---
+
+## Privacy & legal
 
 All tokens stay on your machine. The MCP server runs on `localhost` by default — no external dependencies. The wire-trace tooling is opt-in (`--debug` flag) and redacts every known-secret field.
 
 The reference Python repo is for personal/family use of one's own children's school data. This project is the same — log in as yourself with your own MitID; do not use to access anyone else's account.
 
-## Contributing
+> **Disclaimer.** This project is not affiliated with, endorsed by, or sponsored by KMD A/S, Netcompany A/S, or the Aula consortium. *Aula* is a trademark of its respective owner; the name is used here solely to identify what this software talks to.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for repo layout, conventions, and a guide for adding integration plugins. Contributors agree to follow the [Code of Conduct](./CODE_OF_CONDUCT.md). Security issues: please email **cj@signifly.com** rather than opening a public issue — see [SECURITY.md](./SECURITY.md).
+---
 
 ## License
 
