@@ -4,7 +4,7 @@ This project handles MitID authentication tokens for Danish parents accessing th
 
 ## Reporting a vulnerability
 
-Email **cj@signifly.com** privately. Do **not** open a public GitHub issue for anything that touches token handling, the MitID flow, or wire-trace sanitisation — wait until a fix is shipped.
+Email **info@casperjuel.dk** privately. Do **not** open a public GitHub issue for anything that touches token handling, the MitID flow, or wire-trace sanitisation — wait until a fix is shipped.
 
 Include:
 
