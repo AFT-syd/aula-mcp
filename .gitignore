@@ -36,3 +36,9 @@ tokens.json
 !.vscode/extensions.json
 .idea/
 *.log
+
+# AES keys for the file-backed token store. We never want one in git;
+# `aula tokens export` writes one to its output dir, which might be the
+# repo working tree if the user picks a dumb path.
+*.key
+aula-bundle/
