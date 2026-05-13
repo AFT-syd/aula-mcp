@@ -219,13 +219,20 @@ aula.dithjem.dk {
 
 > ⚠️ Hvis du *skal* exposé serveren direkte (springe proxy-laget over) skal du eksplicit sætte `AULA_MCP_ALLOW_REMOTE=1` — det er en kontrolleret, tilsigtet handling, ikke et uheld.
 
-### Mulighed 3: Home Assistant addon (på vej)
+### Mulighed 3: Home Assistant add-on
 
-Den nemmeste vej for HA-brugere bliver en addon der pakker `aula-mcp` ind, så den kører som en del af din HA-installation og er tilgængelig fra HA's Voice/Assist + alle dine HA-automatiseringer. Hvis du har **Nabu Casa**, åbner det også for sikker fjernadgang via deres tunnel.
+Den nemmeste vej for HA-brugere. `aula-mcp` kører som en del af din HA-installation og er tilgængelig fra HA's Voice/Assist + alle dine HA-automatiseringer. Hvis du har **Nabu Casa**, åbner det også for sikker fjernadgang via deres tunnel.
 
-`aula-mcp` taler både den nye Streamable HTTP-protokol (`/mcp`) og den ældre SSE-dialekt (`/sse`) — HA's officielle [`mcp` (client) integration](https://www.home-assistant.io/integrations/mcp/) bruger SSE, så du peger den bare på `http://<ha-host>:7878/sse`, så har Assist + dit valgte LLM (Anthropic / OpenAI / Ollama) adgang til alle `aula.*` tools.
+[![Open your Home Assistant instance and add the aula-mcp add-on repository.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https://github.com/Casperjuel/aula-mcp)
 
-> 🛣️ Spores som [issue (TBD)] — feedback fra HA-folk meget velkommen. Hvis du har erfaring med HA add-on-byggeri, så bliver det her din hjælp.
+1. Klik badget ovenfor (eller manuelt: Settings → Add-ons → ⋮ → Repositories → indsæt `https://github.com/Casperjuel/aula-mcp`).
+2. Installer `aula-mcp` add-on'en fra det repository der dukker op.
+3. Kopier dine tokens fra en workstation ind i `/config/aula-mcp/` (kør `pnpm login` + `pnpm aula tokens export` på workstation, og SCP/Samba til HA).
+4. Settings → Devices & Services → Add Integration → **Model Context Protocol** → `http://homeassistant.local:7878/sse`.
+
+Full walkthrough med detaljerede skridt: [`homeassistant-addon/README.md`](./homeassistant-addon/README.md).
+
+`aula-mcp` taler både den nye Streamable HTTP-protokol (`/mcp`) og den ældre SSE-dialekt (`/sse`) — HA's officielle [`mcp` (client) integration](https://www.home-assistant.io/integrations/mcp/) bruger SSE, så du peger den bare på `http://<ha-host>:7878/sse`. Så har Assist + dit valgte LLM (Anthropic / OpenAI / Ollama) adgang til alle `aula.*` tools — inklusive via voice.
 
 ### Mulighed 4: VPS i Tyskland (Hetzner, Coolify)
 
