@@ -84,7 +84,7 @@ export {
   KeychainTokenStore,
   type KeychainTokenStoreOptions,
 } from './keychain-token-store.ts';
-export { consoleLogger, type Logger, silentLogger } from './logger.ts';
+export { consoleLogger, type Logger, silentLogger, stderrLogger } from './logger.ts';
 export {
   type AppAuthCallbacks,
   type AppAuthLoopOptions,

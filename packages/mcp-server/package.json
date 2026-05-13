@@ -12,7 +12,8 @@
   },
   "scripts": {
     "dev": "bun --watch src/server.ts",
-    "start": "bun src/server.ts"
+    "start": "bun src/server.ts",
+    "start:stdio": "bun src/server-stdio.ts"
   },
   "dependencies": {
     "@aula-mcp/aula-auth": "workspace:*",

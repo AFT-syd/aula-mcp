@@ -7,6 +7,10 @@
  *   DELETE /mcp           — session close
  *   GET  /healthz         — liveness probe
  *
+ * For stdio transport (e.g. spawn-by-agent-runtime use cases like Claude
+ * Desktop, Cursor, Cline), see `server-stdio.ts` — same tool surface,
+ * different transport.
+ *
  * Env:
  *   AULA_MCP_PORT             — port to bind (default 7878)
  *   AULA_MCP_HOST             — interface to bind (default 127.0.0.1)
@@ -20,11 +24,9 @@
  */
 
 import { consoleLogger, silentLogger } from '@aula-mcp/aula-auth';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { Hono } from 'hono';
-import { AulaContext } from './aula-context.ts';
-import { registerTools } from './tools.ts';
+import { createMcpApp } from './setup.ts';
 
 const PORT = Number(process.env.AULA_MCP_PORT ?? 7878);
 const HOST = process.env.AULA_MCP_HOST ?? '127.0.0.1';
@@ -33,44 +35,7 @@ const logger = process.env.AULA_MCP_LOG === '1' ? consoleLogger('aula-mcp') : si
 
 assertSafeBindAddress(HOST);
 
-const context = new AulaContext({ logger });
-
-const mcp = new McpServer(
-  {
-    name: 'aula-mcp',
-    version: '0.0.0',
-  },
-  {
-    capabilities: { tools: {} },
-    instructions: [
-      'This server exposes the Danish school platform Aula to AI agents.',
-      '',
-      'Workflow:',
-      '1. Call `aula.discover` ONCE per session and reuse the manifest. It returns',
-      '   children (with names + ids), institutions, the current API version, and',
-      "   `detectedWidgets` — the widget IDs this user's schools actually have.",
-      '2. Resolve any kid names mentioned in the user prompt against',
-      '   `manifest.children[].name` (case-insensitive, partial — e.g. `luk`',
-      "   matches `Lukas`). Use the matching child's `id` for `childIds` and",
-      '   `userId` for `profileIds` when the tool asks.',
-      '3. Pick ONE subordinate tool, not many. `manifest.capabilities[area].tools[0]`',
-      '   is the right one for this user — only fall back to alternatives if the',
-      "   first errors. Never call ugeplan tools whose widget id isn't in",
-      '   `detectedWidgets`.',
-      "4. Default time windows: when the user says 'denne uge' / 'this week' use",
-      "   `range: 'this_week'`; 'næste uge' → 'next_week'; 'i dag' → 'today'.",
-      "   All times are Europe/Copenhagen — don't shift them.",
-      "5. Reply in the user's language (Danish if they wrote Danish). Dates as",
-      '   `mandag 12. maj`-style, not ISO, unless they ask.',
-      '',
-      "Never re-call `aula.discover` mid-session unless a tool returns 'children",
-      "or widgets unknown' — token refresh is handled server-side, you don't need",
-      'to poll for it.',
-    ].join('\n'),
-  },
-);
-
-registerTools(mcp, context);
+const { mcp } = createMcpApp({ logger });
 
 // Streamable HTTP transport. Stateful mode — the SDK explicitly forbids
 // reusing a *stateless* transport across requests
