@@ -22,13 +22,17 @@ import type {
   CalendarEvent,
   DailyOverviewEntry,
   GetCalendarEventsArgs,
+  GetPresenceTemplatesArgs,
   MessageThread,
+  PresenceTemplatesData,
   ProfileContextData,
   ProfilesByLoginData,
   ThreadMessage,
   ThreadMessagesData,
   ThreadsData,
+  UpdatePresenceTemplateArgs,
 } from './aula-types.ts';
+import { PRESENCE_ACTIVITY_TYPE } from './aula-types.ts';
 import { AulaApiError, AulaApiVersionError, AulaStepUpRequiredError } from './errors.ts';
 
 export interface AulaClientOptions {
@@ -138,6 +142,41 @@ export class AulaClient {
     for (const id of childIds) params.append('childIds[]', String(id));
     const data = await this.getJsonRaw<DailyOverviewEntry[]>(params);
     return data ?? [];
+  }
+
+  /**
+   * `presence.getPresenceTemplates` — the recurring komme/gå templates
+   * (drop-off + pickup times parents register per day). Returns the raw
+   * `presenceWeekTemplates` envelope; each entry carries the
+   * `institutionProfile.id` that {@link updatePresenceTemplate} needs.
+   */
+  async getPresenceTemplates(args: GetPresenceTemplatesArgs): Promise<PresenceTemplatesData> {
+    if (args.institutionProfileIds.length === 0) return {};
+    const params = new URLSearchParams();
+    params.set('method', 'presence.getPresenceTemplates');
+    // Array params take the `[]` suffix, same as childIds[] above.
+    for (const id of args.institutionProfileIds) {
+      params.append('filterInstitutionProfileIds[]', String(id));
+    }
+    params.set('fromDate', args.fromDate);
+    params.set('toDate', args.toDate);
+    const data = await this.getJsonRaw<PresenceTemplatesData>(params);
+    return data ?? {};
+  }
+
+  /**
+   * `presence.updatePresenceTemplate` — register or overwrite a komme/gå
+   * template for one child on one day. A non-`never` `repeatPattern` makes
+   * it recur on that weekday until `repeatUntil`.
+   *
+   * This is a write to the live Aula platform — the MCP server gates the
+   * tool that calls it behind `AULA_MCP_WRITE=1`.
+   */
+  async updatePresenceTemplate(args: UpdatePresenceTemplateArgs): Promise<unknown> {
+    return this.postJson<unknown>(
+      'presence.updatePresenceTemplate',
+      JSON.stringify(buildPresenceTemplateBody(args)),
+    );
   }
 
   async getCalendarEvents(args: GetCalendarEventsArgs): Promise<CalendarEvent[]> {
@@ -334,6 +373,51 @@ export class AulaClient {
     qs.set('access_token', this.tokens.access_token);
     return `${this.apiBaseHost}/api/v${version}/?${qs.toString()}`;
   }
+}
+
+/**
+ * Build the `presence.updatePresenceTemplate` POST body.
+ *
+ * The shape mirrors the Aula presence frontend's `preparePresenceTemplateParams`:
+ * `presenceActivity` nests a different time block per `activityType` —
+ * `pickup` / `selfDecider` / `sendHome` / `goHomeWith`. `expiresAt` only
+ * means anything for a repeating template, so it's nulled for a one-off.
+ */
+function buildPresenceTemplateBody(args: UpdatePresenceTemplateArgs): Record<string, unknown> {
+  const repeatPattern = args.repeatPattern ?? 'never';
+  const entryTime = args.entryTime ?? null;
+  const exitTime = args.exitTime ?? null;
+
+  const presenceActivity: Record<string, unknown> = {
+    activityType: PRESENCE_ACTIVITY_TYPE[args.activityType],
+  };
+  switch (args.activityType) {
+    case 'picked_up_by':
+      presenceActivity.pickup = { entryTime, exitTime, exitWith: args.pickedUpBy ?? null };
+      break;
+    case 'self_decider':
+      presenceActivity.selfDecider = {
+        entryTime,
+        exitStartTime: args.selfDeciderStartTime ?? null,
+        exitEndTime: args.selfDeciderEndTime ?? null,
+      };
+      break;
+    case 'send_home':
+      presenceActivity.sendHome = { entryTime, exitTime };
+      break;
+    case 'go_home_with':
+      presenceActivity.goHomeWith = { entryTime, exitTime, exitWith: args.pickedUpBy ?? null };
+      break;
+  }
+
+  return {
+    institutionProfileId: args.institutionProfileId,
+    byDate: args.date,
+    presenceActivity,
+    comment: args.comment ?? null,
+    repeatPattern,
+    expiresAt: repeatPattern === 'never' ? null : (args.repeatUntil ?? null),
+  };
 }
 
 // Avoid unused-import lint when using AulaCookieJar transitively.

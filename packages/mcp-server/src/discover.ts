@@ -60,6 +60,9 @@ export interface DiscoverManifest {
   detectedWidgets: string[];
   /** True when AULA_MCP_RAW=1 — the aula.raw_request escape hatch is callable. */
   rawRequestEnabled: boolean;
+  /** True when AULA_MCP_WRITE=1 — write tools (aula.presence.set_template) are
+   *  registered. Off by default; the server is read-only unless opted in. */
+  writeEnabled: boolean;
   /** Inline hints repeating server `instructions` so the agent has the
    *  workflow next to the data it just read. Cheaper to ground on this
    *  than to re-fetch context — keep tight. */
@@ -137,6 +140,7 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
     ),
   ).sort();
 
+  const writeEnabled = process.env.AULA_MCP_WRITE === '1';
   const now = Math.floor(Date.now() / 1000);
   const manifest: DiscoverManifest = {
     user: {
@@ -150,9 +154,10 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
       expires_at: record.tokens.expires_at,
       seconds_remaining: record.tokens.expires_at - now,
     },
-    capabilities: buildCapabilities(detectedWidgets),
+    capabilities: buildCapabilities(detectedWidgets, writeEnabled),
     detectedWidgets,
     rawRequestEnabled: process.env.AULA_MCP_RAW === '1',
+    writeEnabled,
     usage: {
       cache:
         'Reuse this manifest for the rest of the session. Do not call aula.discover again unless a tool reports unknown children/widgets.',
@@ -173,7 +178,10 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
  * Build the capabilities block, prefixing the per-school detected providers
  * to each tool list so the agent picks the actually-configured one first.
  */
-function buildCapabilities(detectedWidgets: string[]): Record<string, DiscoveredCapability> {
+function buildCapabilities(
+  detectedWidgets: string[],
+  writeEnabled: boolean,
+): Record<string, DiscoveredCapability> {
   const detectedByCapability = new Map<string, { provider: string; tool: string }[]>();
   for (const id of detectedWidgets) {
     const entry = WIDGET_PROVIDER_MAP[id];
@@ -208,8 +216,21 @@ function buildCapabilities(detectedWidgets: string[]): Record<string, Discovered
       tools: ['aula.profiles.list'],
     },
     presence: {
-      summary: 'Daily presence for one or more children: arrived/sick/picked up etc.',
-      tools: ['aula.presence.today'],
+      summary: writeEnabled
+        ? 'Daily presence (arrived/sick/picked up), the recurring komme/gå schedule, ' +
+          'and setting drop-off/pickup times.'
+        : 'Daily presence (arrived/sick/picked up) and the recurring komme/gå ' +
+          '(drop-off/pickup) schedule.',
+      tools: writeEnabled
+        ? ['aula.presence.today', 'aula.presence.templates', 'aula.presence.set_template']
+        : ['aula.presence.today', 'aula.presence.templates'],
+      ...(writeEnabled
+        ? {}
+        : {
+            notes:
+              'aula.presence.set_template (writing komme/gå times) is available only ' +
+              'when the server runs with AULA_MCP_WRITE=1.',
+          }),
     },
     calendar: {
       summary:

@@ -5,7 +5,7 @@
 [![Bun](https://img.shields.io/badge/Bun-≥%201.3-black?logo=bun)](https://bun.sh)
 [![pnpm](https://img.shields.io/badge/pnpm-≥%2010-F69220?logo=pnpm)](https://pnpm.io)
 [![MCP](https://img.shields.io/badge/Model_Context_Protocol-Streamable_HTTP-6B5BFF)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/badge/tests-209%20pass-brightgreen)](#udvikling)
+[![Tests](https://img.shields.io/badge/tests-248%20pass-brightgreen)](#udvikling)
 
 **Hvad det her er — og hvad det *ikke* er:**
 
@@ -261,7 +261,7 @@ Form:
   detectedWidgets: ['0001', '0029', '0030'],   // fra Aula's pageConfiguration
   capabilities: {
     profiles:      { summary, tools: ['aula.profiles.list'] },
-    presence:      { summary, tools: ['aula.presence.today'] },
+    presence:      { summary, tools: ['aula.presence.today', 'aula.presence.templates'] },
     calendar:      { summary, tools: ['aula.calendar.events'] },
     messages:      { summary, tools: ['aula.messages.list_threads', 'aula.messages.get_thread'] },
     notifications: { summary, tools: ['aula.notifications.list'] },
@@ -274,11 +274,16 @@ Form:
   usage: {
     cache, nameResolution, pickOne, timeWindows, language
   },
-  rawRequestEnabled: false
+  rawRequestEnabled: false,
+  writeEnabled: false
 }
 ```
 
 `capabilities[area].tools[0]` er altid det rigtige tool at kalde — når en skoles widgets detekteres, listes kun den matchende vendor, så agenten ikke famler ud over flere providers. Det inline `usage`-blok fortæller agenten hvordan den skal opføre sig (cache manifestet, fuzzy-match børnenavne, default til Europe/Copenhagen, svar på brugerens sprog).
+
+### Komme/gå — sæt afleverings- og hentetider
+
+`aula-mcp` er read-only som standard. Sætter du `AULA_MCP_WRITE=1`, registreres ét ekstra tool — `aula.presence.set_template` — der kan oprette eller overskrive et barns komme/gå-skabelon for én dag: afleveringstid, hentetid, henteform (`picked_up_by` "Hentes af", `self_decider` "Selvbestemmer", `send_home` "Sendes hjem", `go_home_with` "Går hjem med") og evt. en ugentlig gentagelse. Læse-toolet `aula.presence.templates` viser den nuværende plan og er altid slået til. Skrive-toolet rører rigtige data i Aula, så det sidder bevidst bag et flag — en agent skal ikke kunne omlægge dit barns hentetid uden at du har slået det til. `writeEnabled` i manifestet afspejler om flaget er sat.
 
 ---
 
@@ -328,6 +333,7 @@ Komplet hjælp med eksempler: `pnpm aula --help`
 | `AULA_MCP_HOST` | `127.0.0.1` | Bind-interface. Nægter ikke-loopback medmindre `AULA_MCP_ALLOW_REMOTE=1`. |
 | `AULA_MCP_DIR` | `~/.config/aula-mcp` | Konfig-mappe (fil-backend + transcripts + login-log). |
 | `AULA_MCP_RAW=1` | off | Aktiverer `aula.raw_request` escape-hatch-toolet. |
+| `AULA_MCP_WRITE=1` | off | Aktiverer skrive-tools (`aula.presence.set_template` — sæt komme/gå-tider). Serveren er read-only uden den. |
 | `AULA_MCP_LOG=1` | off | Verbose console-logs fra auth/client-lagene. |
 | `AULA_MCP_ALLOW_REMOTE=1` | off | Tillader at binde til ikke-loopback adresser (fx bag en reverse proxy). |
 
@@ -405,7 +411,7 @@ pnpm install          # installér alt
 pnpm typecheck        # tsc -p tsconfig.json --noEmit
 pnpm lint             # biome check .
 pnpm lint:fix         # biome check --write .
-pnpm test             # bun:test-suiterne (209 cases)
+pnpm test             # bun:test-suiterne (248 cases)
 pnpm test:watch       # re-run ved ændring
 ```
 

@@ -21,6 +21,8 @@
  *   AULA_MCP_DIR              — config dir (default ~/.config/aula-mcp)
  *   AULA_MCP_KEY              — encryption key for the token store
  *   AULA_MCP_RAW=1            — enable the aula.raw_request escape hatch
+ *   AULA_MCP_WRITE=1          — enable write tools (aula.presence.set_template);
+ *                               the server is read-only without it
  *   AULA_MCP_LOG=1            — verbose console logs from auth/client layers
  *   AULA_MCP_ALLOW_REMOTE=1   — allow binding to non-loopback addresses (refuses
  *                               by default; the server is single-user and any

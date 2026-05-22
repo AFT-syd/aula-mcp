@@ -66,6 +66,11 @@ function fakeContext(): AulaContext {
         },
       };
     },
+    async getPresenceTemplates() {
+      return {
+        presenceWeekTemplates: [{ institutionProfile: { id: 9001 }, dayTemplates: [] }],
+      };
+    },
   };
   return {
     record: {
@@ -204,6 +209,7 @@ describe('MCP server: tools/list', () => {
     expect(names).toContain('aula.discover');
     expect(names).toContain('aula.profiles.list');
     expect(names).toContain('aula.presence.today');
+    expect(names).toContain('aula.presence.templates');
     expect(names).toContain('aula.calendar.events');
     expect(names).toContain('aula.messages.list_threads');
     expect(names).toContain('aula.messages.get_thread');
@@ -217,6 +223,8 @@ describe('MCP server: tools/list', () => {
     expect(names).toContain('aula.huskelisten.systematic');
     // aula.raw_request is NOT in the list because AULA_MCP_RAW isn't set.
     expect(names).not.toContain('aula.raw_request');
+    // aula.presence.set_template is gated the same way behind AULA_MCP_WRITE.
+    expect(names).not.toContain('aula.presence.set_template');
   });
 });
 
@@ -246,6 +254,26 @@ describe('MCP server: tools/call(aula.discover)', () => {
     expect(manifest.detectedWidgets).toEqual(['0001', '0030']);
     // EasyIQ (0001) should be listed first for ugeplan since it's detected.
     expect(manifest.capabilities.ugeplan?.tools[0]).toBe('aula.ugeplan.easyiq');
+  });
+});
+
+describe('MCP server: tools/call(aula.presence.templates)', () => {
+  test('returns the presenceWeekTemplates payload', async () => {
+    await init();
+    const r = await rpc({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'aula.presence.templates', arguments: { childIds: [9001] } },
+    });
+    expect(r.error).toBeUndefined();
+    const result = r.result as { content: Array<{ type: string; text: string }> };
+    const first = result.content[0];
+    if (!first) throw new Error('expected content[0]');
+    const data = JSON.parse(first.text) as {
+      presenceWeekTemplates: Array<{ institutionProfile: { id: number } }>;
+    };
+    expect(data.presenceWeekTemplates[0]?.institutionProfile.id).toBe(9001);
   });
 });
 

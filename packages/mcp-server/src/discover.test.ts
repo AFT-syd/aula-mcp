@@ -149,6 +149,30 @@ describe('buildDiscoverManifest', () => {
     }
   });
 
+  test('presence capability lists templates; set_template is gated by default', async () => {
+    const m = await buildDiscoverManifest(fakeContext());
+    expect(m.writeEnabled).toBe(false);
+    expect(m.capabilities.presence?.tools).toEqual([
+      'aula.presence.today',
+      'aula.presence.templates',
+    ]);
+    expect(m.capabilities.presence?.notes).toContain('AULA_MCP_WRITE');
+  });
+
+  test('writeEnabled + set_template tool reflect AULA_MCP_WRITE env', async () => {
+    const original = process.env.AULA_MCP_WRITE;
+    process.env.AULA_MCP_WRITE = '1';
+    try {
+      const m = await buildDiscoverManifest(fakeContext());
+      expect(m.writeEnabled).toBe(true);
+      expect(m.capabilities.presence?.tools).toContain('aula.presence.set_template');
+      expect(m.capabilities.presence?.notes).toBeUndefined();
+    } finally {
+      if (original === undefined) delete process.env.AULA_MCP_WRITE;
+      else process.env.AULA_MCP_WRITE = original;
+    }
+  });
+
   test('omits identityName when not set in record', async () => {
     const m = await buildDiscoverManifest(fakeContext({ identityName: null }));
     expect(m.user.identityName).toBeUndefined();

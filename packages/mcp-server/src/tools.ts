@@ -3,7 +3,12 @@
  * Inputs are validated by Zod 4 schemas registered with McpServer.
  */
 
-import { AulaStepUpRequiredError, isoWeekString } from '@aula-mcp/aula-client';
+import {
+  AulaStepUpRequiredError,
+  isoDate,
+  isoWeekString,
+  isoWeekToMonday,
+} from '@aula-mcp/aula-client';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { AulaContext } from './aula-context.ts';
@@ -12,6 +17,72 @@ import { buildDiscoverManifest } from './discover.ts';
 
 function jsonContent(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+}
+
+/** Monday..Sunday of the current ISO week as `YYYY-MM-DD` strings. */
+function currentWeekRange(): { from: string; to: string } {
+  const monday = isoWeekToMonday(isoWeekString());
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  return { from: isoDate(monday), to: isoDate(sunday) };
+}
+
+/** `YYYY-MM-DD`. */
+const ISO_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** 24-hour `HH:mm`. */
+const HH_MM = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
+/** Komme/gå "henteform" values the write tool accepts. */
+const SET_TEMPLATE_ACTIVITY_TYPES = [
+  'picked_up_by',
+  'self_decider',
+  'send_home',
+  'go_home_with',
+] as const;
+
+/**
+ * Subset of aula.presence.set_template's args that has cross-field rules.
+ * Optional fields spell out `| undefined` so the tool's Zod-inferred args
+ * (which carry explicit `undefined` under `exactOptionalPropertyTypes`)
+ * assign cleanly.
+ */
+export interface SetTemplateArgs {
+  activityType: (typeof SET_TEMPLATE_ACTIVITY_TYPES)[number];
+  pickedUpBy?: string | undefined;
+  selfDeciderStartTime?: string | undefined;
+  selfDeciderEndTime?: string | undefined;
+  repeat?: 'never' | 'weekly' | 'every_2_weeks' | undefined;
+  repeatUntil?: string | undefined;
+}
+
+/**
+ * Cross-field checks for aula.presence.set_template — the rules a flat Zod
+ * schema can't express (a field required only for certain activityTypes).
+ * Returns human-readable problems; an empty array means the args cohere.
+ */
+export function validateSetTemplateArgs(args: SetTemplateArgs): string[] {
+  const problems: string[] = [];
+  if (
+    (args.activityType === 'picked_up_by' || args.activityType === 'go_home_with') &&
+    !args.pickedUpBy
+  ) {
+    problems.push(
+      `activityType "${args.activityType}" requires pickedUpBy (who collects the child).`,
+    );
+  }
+  if (
+    args.activityType === 'self_decider' &&
+    (!args.selfDeciderStartTime || !args.selfDeciderEndTime)
+  ) {
+    problems.push(
+      'activityType "self_decider" requires selfDeciderStartTime and selfDeciderEndTime.',
+    );
+  }
+  const repeat = args.repeat ?? 'never';
+  if (repeat !== 'never' && !args.repeatUntil) {
+    problems.push(`repeat "${repeat}" requires repeatUntil (the last date the repeat applies).`);
+  }
+  return problems;
 }
 
 export function registerTools(server: McpServer, context: AulaContext): void {
@@ -71,6 +142,135 @@ export function registerTools(server: McpServer, context: AulaContext): void {
       return jsonContent(await client.getDailyOverview(args.childIds));
     },
   );
+
+  // --- aula.presence.templates ---------------------------------------------
+
+  server.registerTool(
+    'aula.presence.templates',
+    {
+      title: 'Komme/gå templates (drop-off & pickup schedule)',
+      description:
+        'Recurring komme/gå (presence) templates for the given children — the drop-off ' +
+        'and pickup times a guardian has registered per day. Pass the same child IDs as ' +
+        '`aula.presence.today`. `from`/`to` bound the window (YYYY-MM-DD); they default ' +
+        'to the current week. Each returned template carries the `institutionProfile.id` ' +
+        'that `aula.presence.set_template` needs. Read this before changing a schedule.',
+      inputSchema: {
+        childIds: z
+          .array(z.number().int().positive())
+          .min(1)
+          .describe('Aula child IDs (from aula.discover.children[].id)'),
+        from: ISO_DATE.optional().describe('Window start YYYY-MM-DD. Defaults to this Monday.'),
+        to: ISO_DATE.optional().describe('Window end YYYY-MM-DD. Defaults to this Sunday.'),
+      },
+    },
+    async (args) => {
+      const window = args.from && args.to ? { from: args.from, to: args.to } : currentWeekRange();
+      const client = await context.getClient();
+      return jsonContent(
+        await client.getPresenceTemplates({
+          institutionProfileIds: args.childIds,
+          fromDate: window.from,
+          toDate: window.to,
+        }),
+      );
+    },
+  );
+
+  // --- aula.presence.set_template (gated, write) ---------------------------
+  //
+  // The first and only tool that *writes* to Aula. Gated behind
+  // AULA_MCP_WRITE=1 so a server stays read-only by default — rescheduling a
+  // child's pickup is not something an agent should be able to do unasked.
+
+  if (process.env.AULA_MCP_WRITE === '1') {
+    server.registerTool(
+      'aula.presence.set_template',
+      {
+        title: 'Set a komme/gå template (drop-off & pickup time)',
+        description:
+          "Register or overwrite a child's komme/gå template for one day. WRITES to " +
+          'Aula — enabled when AULA_MCP_WRITE=1. Covers one child and one date per call; ' +
+          'call once per day to fill a week. Read `aula.presence.templates` first to see ' +
+          'the current schedule and confirm the child id. `activityType` picks how the ' +
+          'child leaves: picked_up_by ("Hentes af", a named person collects), ' +
+          'self_decider ("Selvbestemmer", may leave alone between two times), ' +
+          'send_home ("Sendes hjem", leaves alone at exitTime), go_home_with ' +
+          '("Går hjem med", leaves with a named person). Set `repeat` to make it recur ' +
+          'on that weekday until `repeatUntil`.',
+        inputSchema: {
+          institutionProfileId: z
+            .number()
+            .int()
+            .positive()
+            .describe(
+              'Child institution-profile id — the same id passed to aula.presence.today ' +
+                'as childIds, and the institutionProfile.id from aula.presence.templates.',
+            ),
+          date: ISO_DATE.describe(
+            'Day the template applies to (YYYY-MM-DD). With repeat set, this is the ' +
+              'first occurrence and fixes the weekday.',
+          ),
+          activityType: z
+            .enum(SET_TEMPLATE_ACTIVITY_TYPES)
+            .describe('How the child leaves the institution.'),
+          entryTime: HH_MM.optional().describe('Drop-off time, HH:mm.'),
+          exitTime: HH_MM.optional().describe(
+            'Pickup / go-home time, HH:mm. Used by picked_up_by, send_home, go_home_with.',
+          ),
+          pickedUpBy: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              'Name of the person collecting the child. Required for ' +
+                'picked_up_by and go_home_with.',
+            ),
+          selfDeciderStartTime: HH_MM.optional().describe(
+            'Earliest the child may leave, HH:mm. Required for self_decider.',
+          ),
+          selfDeciderEndTime: HH_MM.optional().describe(
+            'Latest the child may leave, HH:mm. Required for self_decider.',
+          ),
+          comment: z.string().optional().describe('Free-text note shown to staff.'),
+          repeat: z
+            .enum(['never', 'weekly', 'every_2_weeks'])
+            .optional()
+            .describe('Repeat cadence. Defaults to never (the single day only).'),
+          repeatUntil: ISO_DATE.optional().describe(
+            'Last date the repeat applies (YYYY-MM-DD). Required when repeat is ' +
+              'weekly or every_2_weeks.',
+          ),
+        },
+      },
+      async (args) => {
+        // Cross-field prerequisites Zod can't express — fail here with an
+        // actionable message rather than letting Aula reject a half-built
+        // template after the round-trip.
+        const problems = validateSetTemplateArgs(args);
+        if (problems.length > 0) {
+          return jsonContent({ error: 'invalid_arguments', problems });
+        }
+        const repeat = args.repeat ?? 'never';
+
+        const client = await context.getClient();
+        const result = await client.updatePresenceTemplate({
+          institutionProfileId: args.institutionProfileId,
+          date: args.date,
+          activityType: args.activityType,
+          repeatPattern: repeat,
+          ...(args.entryTime ? { entryTime: args.entryTime } : {}),
+          ...(args.exitTime ? { exitTime: args.exitTime } : {}),
+          ...(args.pickedUpBy ? { pickedUpBy: args.pickedUpBy } : {}),
+          ...(args.selfDeciderStartTime ? { selfDeciderStartTime: args.selfDeciderStartTime } : {}),
+          ...(args.selfDeciderEndTime ? { selfDeciderEndTime: args.selfDeciderEndTime } : {}),
+          ...(args.comment !== undefined ? { comment: args.comment } : {}),
+          ...(args.repeatUntil ? { repeatUntil: args.repeatUntil } : {}),
+        });
+        return jsonContent({ ok: true, result });
+      },
+    );
+  }
 
   // --- aula.calendar.events ------------------------------------------------
 

@@ -8,7 +8,7 @@
  */
 
 import { AulaHttpClient, InMemoryTracer, withFreshTokens } from '@aula-mcp/aula-auth';
-import { AulaClient } from '@aula-mcp/aula-client';
+import { AulaClient, isoDate } from '@aula-mcp/aula-client';
 import { fail, fmt, ok, printJson, rule, warn } from '../io.ts';
 import { defaultStore } from '../store.ts';
 
@@ -91,6 +91,18 @@ export async function runDoctor(args: DoctorCommandArgs = {}): Promise<void> {
     if (childIds.length === 0) return 'skipped — no child ids';
     const data = await client.getDailyOverview(childIds);
     return `${data.length} entry/entries`;
+  });
+
+  await runCheck(checks, 'presence.getPresenceTemplates', async () => {
+    if (childIds.length === 0) return 'skipped — no child ids';
+    const today = new Date();
+    const weekLater = new Date(today.getTime() + 7 * 86_400_000);
+    const data = await client.getPresenceTemplates({
+      institutionProfileIds: childIds,
+      fromDate: isoDate(today),
+      toDate: isoDate(weekLater),
+    });
+    return `${data.presenceWeekTemplates?.length ?? 0} template(s)`;
   });
 
   await runCheck(checks, 'messaging.getThreads', async () => {

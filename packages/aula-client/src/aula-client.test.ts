@@ -190,3 +190,129 @@ describe('AulaClient.getMessagesForThread step-up', () => {
     expect(out.messages[0]?.sender?.fullName).toBe('Anders');
   });
 });
+
+interface PostedTemplate {
+  institutionProfileId: number;
+  byDate: string;
+  repeatPattern: string;
+  expiresAt: string | null;
+  comment: string | null;
+  presenceActivity: {
+    activityType: number;
+    pickup?: { entryTime: string | null; exitTime: string | null; exitWith: string | null };
+    selfDecider?: {
+      entryTime: string | null;
+      exitStartTime: string | null;
+      exitEndTime: string | null;
+    };
+    sendHome?: { entryTime: string | null; exitTime: string | null };
+    goHomeWith?: { entryTime: string | null; exitTime: string | null; exitWith: string | null };
+  };
+}
+
+describe('AulaClient presence templates', () => {
+  test('getPresenceTemplates sends filterInstitutionProfileIds[] + the date window', async () => {
+    const http = new FakeHttp();
+    http.enqueue(
+      { status: 200, body: envelope({ presenceWeekTemplates: [] }) }, // probe
+      {
+        status: 200,
+        body: envelope({ presenceWeekTemplates: [{ institutionProfile: { id: 10 } }] }),
+      },
+    );
+    const c = makeClient(http);
+    const data = await c.getPresenceTemplates({
+      institutionProfileIds: [10, 20],
+      fromDate: '2026-05-18',
+      toDate: '2026-05-24',
+    });
+    expect(data.presenceWeekTemplates?.[0]?.institutionProfile.id).toBe(10);
+    const url = http.requested[1]?.url ?? '';
+    expect(url).toContain('method=presence.getPresenceTemplates');
+    expect(url).toContain('filterInstitutionProfileIds%5B%5D=10');
+    expect(url).toContain('filterInstitutionProfileIds%5B%5D=20');
+    expect(url).toContain('fromDate=2026-05-18');
+    expect(url).toContain('toDate=2026-05-24');
+  });
+
+  test('getPresenceTemplates returns {} for empty ids without hitting the network', async () => {
+    const http = new FakeHttp();
+    const c = makeClient(http);
+    await expect(
+      c.getPresenceTemplates({ institutionProfileIds: [], fromDate: 'a', toDate: 'b' }),
+    ).resolves.toEqual({});
+    expect(http.requested.length).toBe(0);
+  });
+
+  test('updatePresenceTemplate (picked_up_by) posts the nested pickup block + CSRF', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.enqueue(
+      { status: 200, body: envelope({}) }, // probe
+      { status: 200, body: envelope({ id: 555 }) }, // post
+    );
+    const c = makeClient(http);
+    await c.updatePresenceTemplate({
+      institutionProfileId: 42,
+      date: '2026-05-25',
+      activityType: 'picked_up_by',
+      entryTime: '08:00',
+      exitTime: '15:30',
+      pickedUpBy: 'Mormor',
+    });
+    const post = http.requested[1];
+    expect(post?.method).toBe('POST');
+    expect(post?.headers?.['csrfp-token']).toBe('CSRF-1');
+    expect(post?.url).toContain('method=presence.updatePresenceTemplate');
+    const body = JSON.parse(String(post?.body)) as PostedTemplate;
+    expect(body.institutionProfileId).toBe(42);
+    expect(body.byDate).toBe('2026-05-25');
+    expect(body.repeatPattern).toBe('never');
+    expect(body.expiresAt).toBeNull();
+    expect(body.presenceActivity.activityType).toBe(0);
+    expect(body.presenceActivity.pickup).toEqual({
+      entryTime: '08:00',
+      exitTime: '15:30',
+      exitWith: 'Mormor',
+    });
+  });
+
+  test('updatePresenceTemplate (self_decider) posts the selfDecider window', async () => {
+    const http = new FakeHttp();
+    http.enqueue({ status: 200, body: envelope({}) }, { status: 200, body: envelope({}) });
+    const c = makeClient(http);
+    await c.updatePresenceTemplate({
+      institutionProfileId: 7,
+      date: '2026-05-26',
+      activityType: 'self_decider',
+      selfDeciderStartTime: '14:00',
+      selfDeciderEndTime: '16:00',
+    });
+    const body = JSON.parse(String(http.requested[1]?.body)) as PostedTemplate;
+    expect(body.presenceActivity.activityType).toBe(1);
+    // entryTime defaults to null when the drop-off time is left unset.
+    expect(body.presenceActivity.selfDecider).toEqual({
+      entryTime: null,
+      exitStartTime: '14:00',
+      exitEndTime: '16:00',
+    });
+  });
+
+  test('updatePresenceTemplate carries expiresAt only for a repeating template', async () => {
+    const http = new FakeHttp();
+    http.enqueue({ status: 200, body: envelope({}) }, { status: 200, body: envelope({}) });
+    const c = makeClient(http);
+    await c.updatePresenceTemplate({
+      institutionProfileId: 7,
+      date: '2026-05-26',
+      activityType: 'send_home',
+      exitTime: '16:00',
+      repeatPattern: 'weekly',
+      repeatUntil: '2026-06-30',
+    });
+    const body = JSON.parse(String(http.requested[1]?.body)) as PostedTemplate;
+    expect(body.repeatPattern).toBe('weekly');
+    expect(body.expiresAt).toBe('2026-06-30');
+    expect(body.presenceActivity.sendHome).toEqual({ entryTime: null, exitTime: '16:00' });
+  });
+});
