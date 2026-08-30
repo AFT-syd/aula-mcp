@@ -462,8 +462,17 @@ export function registerTools(server: McpServer, context: AulaContext): void {
       // See aula.messages.get_thread below — profile-scoped feed needs
       // the guardian profile activated, or Aula 403s.
       await context.getGuardianUserId();
+      // posts.getAllPosts 200s with an empty list without institutionProfileIds[]
+      // (the guardian's own institution-profile ids plus every child's) — see
+      // upstream issue #75.
+      const profilesData = await client.getProfilesByLogin();
+      const institutionProfileIds = (profilesData.profiles ?? []).flatMap((p) => [
+        ...(p.institutionProfiles ?? []).map((ip) => ip.id),
+        ...(p.children ?? []).map((c) => c.id),
+      ]);
       return jsonContent(
         await client.getPosts({
+          institutionProfileIds,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
           ...(args.index !== undefined ? { index: args.index } : {}),
         }),

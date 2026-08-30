@@ -304,12 +304,25 @@ export class AulaClient {
   /**
    * `posts.getAllPosts` — class-level news feed (teacher posts, etc.).
    * Returns the raw `data` field. Pagination via `limit` + `index` (both 0-based).
+   *
+   * `parent=profile` + `institutionProfileIds[]` (the guardian's own institution-profile
+   * ids plus every child's) are required — without them Aula answers 200 with an
+   * empty `posts` array. See upstream issue #75.
    */
-  async getPosts(opts: { limit?: number; index?: number } = {}): Promise<unknown> {
-    const params: Record<string, string> = {};
-    if (opts.limit !== undefined) params.limit = String(opts.limit);
-    if (opts.index !== undefined) params.index = String(opts.index);
-    return this.getJson<unknown>('posts.getAllPosts', params);
+  async getPosts(
+    opts: { limit?: number; index?: number; institutionProfileIds: number[] },
+  ): Promise<unknown> {
+    const params = new URLSearchParams({ method: 'posts.getAllPosts', parent: 'profile' });
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts.index !== undefined) params.set('index', String(opts.index));
+    for (const id of opts.institutionProfileIds) {
+      params.append('institutionProfileIds[]', String(id));
+    }
+    const data = await this.getJsonRaw<unknown>(params);
+    if (data === undefined) {
+      throw new AulaApiError('posts.getAllPosts response missing data field', 200, '', '');
+    }
+    return data;
   }
 
   /**

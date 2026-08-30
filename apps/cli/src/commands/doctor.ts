@@ -68,6 +68,7 @@ export async function runDoctor(args: DoctorCommandArgs = {}): Promise<void> {
 
   let guardianUserId: string | null = null;
   let childIds: number[] = [];
+  let institutionProfileIds: number[] = [];
   let detectedWidgets: string[] = [];
 
   await runCheck(checks, 'profiles.getProfileContext', async () => {
@@ -85,6 +86,10 @@ export async function runDoctor(args: DoctorCommandArgs = {}): Promise<void> {
       .flatMap((p) => p.children ?? [])
       .map((c) => c.id)
       .filter((id): id is number => typeof id === 'number');
+    institutionProfileIds = (data.profiles ?? []).flatMap((p) => [
+      ...(p.institutionProfiles ?? []).map((ip) => ip.id),
+      ...childIds,
+    ]);
     return `${childIds.length} child id(s) collected`;
   });
 
@@ -118,7 +123,7 @@ export async function runDoctor(args: DoctorCommandArgs = {}): Promise<void> {
   });
 
   await runCheck(checks, 'posts.getAllPosts', async () => {
-    const data = await client.getPosts({ limit: 5 });
+    const data = await client.getPosts({ limit: 5, institutionProfileIds });
     return `received (${typeof data}; ${JSON.stringify(data).length} chars)`;
   });
 
