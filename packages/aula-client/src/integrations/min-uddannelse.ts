@@ -105,9 +105,10 @@ export class MinUddannelseClient {
     ctx: IntegrationContext,
     token: string,
   ): Promise<T | { _expired: true; status: number; bodySnippet: string }> {
+    const childFilterIds = ctx.childUserIds?.some(Boolean) ? ctx.childUserIds : ctx.childIds;
     const params = new URLSearchParams({
       assuranceLevel: '2',
-      childFilter: ctx.childIds.join(','),
+      childFilter: childFilterIds.join(','),
       currentWeekNumber: ctx.isoWeek,
       isMobileApp: 'false',
       placement: 'narrow',

@@ -264,14 +264,24 @@ describe('MinUddannelseClient.getOpgaver', () => {
     expect(plan.items[0]?.content).toContain('Hej forældre');
   });
 
-  test('sends Authorization Bearer + childFilter csv', async () => {
+  test('sends Authorization Bearer + childFilter csv using unilogin ids', async () => {
     const http = new FakeHttp().enqueue({ status: 200, body: '{"opgaver":[]}' });
     const client = new MinUddannelseClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
     await client.getOpgaver(ctx({ childIds: [10, 20, 30] }));
     const url = http.requested[0]?.url ?? '';
-    expect(url).toContain('childFilter=10%2C20%2C30');
+    // MU keys childFilter on the unilogin userId, not the numeric profile id
+    // (see upstream issue #74) — ctx()'s default childUserIds are u10/u20/u30.
+    expect(url).toContain('childFilter=u10%2Cu20%2Cu30');
     expect(url).toContain('userProfile=guardian');
     expect(http.requested[0]?.headers?.authorization).toBe('Bearer TKN-1');
+  });
+
+  test('falls back to numeric child ids when no unilogin was resolved', async () => {
+    const http = new FakeHttp().enqueue({ status: 200, body: '{"opgaver":[]}' });
+    const client = new MinUddannelseClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    await client.getOpgaver(ctx({ childIds: [10, 20, 30], childUserIds: ['', '', ''] }));
+    const url = http.requested[0]?.url ?? '';
+    expect(url).toContain('childFilter=10%2C20%2C30');
   });
 });
 
