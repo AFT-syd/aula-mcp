@@ -218,4 +218,21 @@ describe('TabulexClient — SSO handshake', () => {
     expect(widgets.refreshCalls).toBe(1);
     expect(http.requested).toHaveLength(4);
   });
+
+  test('throws TabulexSessionError immediately when a hop has no form to continue (no retry)', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    // The SSO-start POST itself comes back with a plain error page — not on
+    // foraeldre.tabulex.net, and no hidden-input form to resubmit. Distinct
+    // from the "no FedAuth cookie" failure above: this throws mid-handshake,
+    // so it propagates immediately without the refresh+retry fallback.
+    http.enqueue({ status: 200, body: '<html><body>Access denied</body></html>' });
+
+    const widgets = fakeWidgets();
+    const client = new TabulexClient({ http: http.asHttpClient(), widgets });
+
+    await expect(client.getPersonsAdgangTilBoern(ctx())).rejects.toThrow(/no form to continue/);
+    expect(widgets.refreshCalls).toBe(0);
+    expect(http.requested).toHaveLength(1);
+  });
 });
