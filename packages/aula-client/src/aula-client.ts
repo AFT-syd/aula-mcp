@@ -309,9 +309,11 @@ export class AulaClient {
    * ids plus every child's) are required — without them Aula answers 200 with an
    * empty `posts` array. See upstream issue #75.
    */
-  async getPosts(
-    opts: { limit?: number; index?: number; institutionProfileIds: number[] },
-  ): Promise<unknown> {
+  async getPosts(opts: {
+    limit?: number;
+    index?: number;
+    institutionProfileIds: number[];
+  }): Promise<unknown> {
     const params = new URLSearchParams({ method: 'posts.getAllPosts', parent: 'profile' });
     if (opts.limit !== undefined) params.set('limit', String(opts.limit));
     if (opts.index !== undefined) params.set('index', String(opts.index));

@@ -1,6 +1,6 @@
 /**
  * Common types used by every integration plugin (EasyIQ, Meebook, Min
- * Uddannelse, Systematic).
+ * Uddannelse, Systematic, Tabulex).
  *
  * Each plugin maps a third-party API into a normalised shape so the MCP
  * agent doesn't have to know which provider the school is on. The raw
@@ -30,11 +30,11 @@ export interface IntegrationContext {
 }
 
 export interface IntegrationPluginInfo {
-  id: 'easyiq' | 'meebook' | 'minuddannelse' | 'systematic';
+  id: 'easyiq' | 'meebook' | 'minuddannelse' | 'systematic' | 'tabulex';
   /** Aula widget IDs this plugin uses (configurable to survive Aula renames). */
   widgetIds: string[];
   /** Capability tags this plugin claims to provide. */
-  capabilities: ReadonlyArray<'ugeplan' | 'opgaver' | 'huskelisten' | 'ugebrev'>;
+  capabilities: ReadonlyArray<'ugeplan' | 'opgaver' | 'huskelisten' | 'ugebrev' | 'fravaer'>;
 }
 
 /** A normalised "weekly plan" entry — what every ugeplan provider produces. */
