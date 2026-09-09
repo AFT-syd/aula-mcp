@@ -44,6 +44,21 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('not a url')).toBe('not a url');
   });
 
+  test('redacts a CPR-shaped path segment (Tabulex puts it in the URL, not a query param)', () => {
+    const withDash = sanitizeUrl('https://foraeldre.tabulex.net/api/Fravaer/Idag/010120-1234');
+    expect(withDash).not.toContain('010120-1234');
+    expect(withDash).toContain('redacted-cpr');
+
+    const withoutDash = sanitizeUrl('https://foraeldre.tabulex.net/api/Fravaer/Idag/0101201234');
+    expect(withoutDash).not.toContain('0101201234');
+    expect(withoutDash).toContain('redacted-cpr');
+  });
+
+  test('does not redact non-CPR-shaped path segments', () => {
+    const url = 'https://foraeldre.tabulex.net/api/Fravaer/Oversigt/12345';
+    expect(sanitizeUrl(url)).toBe(url);
+  });
+
   test('redacts refresh_token and id_token too', () => {
     const out = sanitizeUrl(`https://example.com/cb?refresh_token=${JWT}&id_token=${JWT}`);
     expect(out).not.toContain('SIGNATURE');
@@ -170,6 +185,14 @@ describe('sanitizeRequestBody', () => {
     expect(parsed.m1).toContain('redacted');
     expect(parsed.flowValueProof).toContain('redacted');
     expect(parsed.keep_me).toBe('fine');
+  });
+
+  test('redacts Cpr in a JSON body (Tabulex MeldSygIdag/MeldSygImorgen)', () => {
+    const out = sanitizeRequestBody(JSON.stringify({ Cpr: '0101201234' }));
+    if (out == null) throw new Error('expected non-null');
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(parsed.Cpr).toContain('redacted');
+    expect(out).not.toContain('0101201234');
   });
 
   test('binary body is summarised as length only', () => {

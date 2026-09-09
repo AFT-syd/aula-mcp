@@ -29,6 +29,7 @@ import {
   MeebookClient,
   MinUddannelseClient,
   SystematicClient,
+  TabulexClient,
   WidgetTokenManager,
 } from '@aula-mcp/aula-client';
 
@@ -214,6 +215,10 @@ export class AulaContext {
 
   async getSystematic(): Promise<SystematicClient> {
     return new SystematicClient({ http: this.http, widgets: await this.getWidgetManager() });
+  }
+
+  async getTabulex(): Promise<TabulexClient> {
+    return new TabulexClient({ http: this.http, widgets: await this.getWidgetManager() });
   }
 
   /** The currently-loaded record (after first getClient()). */
