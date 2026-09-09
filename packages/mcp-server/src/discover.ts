@@ -101,6 +101,11 @@ const WIDGET_PROVIDER_MAP: Readonly<
     provider: 'easyiq_lektier',
     tool: 'aula.lektier.easyiq',
   },
+  '0047': {
+    capability: 'fravaer',
+    provider: 'tabulex',
+    tool: 'aula.fravaer.tabulex_boern',
+  },
 });
 
 export async function buildDiscoverManifest(context: AulaContext): Promise<DiscoverManifest> {
@@ -196,6 +201,7 @@ function buildCapabilities(
   const ugebrevDetected = detectedByCapability.get('ugebrev') ?? [];
   const huskelistenDetected = detectedByCapability.get('huskelisten') ?? [];
   const lektierDetected = detectedByCapability.get('lektier') ?? [];
+  const fravaerDetected = detectedByCapability.get('fravaer') ?? [];
 
   // When detection picked a provider for a third-party capability, expose
   // ONLY that tool. Listing alternates as fallbacks invites Claude to fan
@@ -309,6 +315,38 @@ function buildCapabilities(
               'EasyIQ Lektier widget (0142) not detected — call may return empty. Skip if user did not specifically ask for lektier.',
           }
         : {}),
+    },
+    fravaer: {
+      summary:
+        'Absence reporting ("Fravær - forældreindberetning", widget 0047) via Tabulex — ' +
+        "separate from Aula's own presence/komme-gå system. Call aula.fravaer.tabulex_boern " +
+        "first to get each child's cpr, then the other aula.fravaer.tabulex_* tools.",
+      tools: writeEnabled
+        ? [
+            'aula.fravaer.tabulex_boern',
+            'aula.fravaer.tabulex_idag',
+            'aula.fravaer.tabulex_imorgen',
+            'aula.fravaer.tabulex_skoledage',
+            'aula.fravaer.tabulex_oversigt',
+            'aula.fravaer.tabulex_meld_syg',
+          ]
+        : [
+            'aula.fravaer.tabulex_boern',
+            'aula.fravaer.tabulex_idag',
+            'aula.fravaer.tabulex_imorgen',
+            'aula.fravaer.tabulex_skoledage',
+            'aula.fravaer.tabulex_oversigt',
+          ],
+      notes:
+        (fravaerDetected.length === 0
+          ? 'Widget 0047 not detected — call may fail or return empty. Skip if user did not ' +
+            'specifically ask about Tabulex fravær. '
+          : '') +
+        (writeEnabled
+          ? 'aula.fravaer.tabulex_meld_syg cannot be undone — Tabulex has no equivalent of ' +
+            'un-reporting sick. Confirm the exact child and day with the user before calling.'
+          : 'aula.fravaer.tabulex_meld_syg (reporting a child sick via Tabulex) is available ' +
+            'only when the server runs with AULA_MCP_WRITE=1.'),
     },
   };
 }

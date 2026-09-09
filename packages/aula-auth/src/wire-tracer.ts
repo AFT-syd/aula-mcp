@@ -117,6 +117,7 @@ const SECRET_BODY_FIELDS = [
   'randoma',
   'identityclaim',
   'chosenoptionjson',
+  'cpr',
 ];
 
 const SECRET_BODY_FIELDS_SET = new Set(SECRET_BODY_FIELDS.map((s) => s.toLowerCase()));
@@ -138,7 +139,22 @@ const SECRET_URL_PARAMS = new Set([
   'session_code',
 ]);
 
-/** Sanitise a URL by redacting known-secret query-string values. */
+/**
+ * A Danish CPR number, with or without the separating dash: `DDMMYY-XXXX` or
+ * `DDMMYYXXXX`. The Tabulex integration (widget 0047, "Fravær —
+ * forældreindberetning") puts a child's CPR directly in the URL PATH
+ * (`/api/Fravaer/Idag/{cpr}`), not a query parameter — `SECRET_URL_PARAMS`
+ * doesn't cover that, so path segments matching this shape are redacted too.
+ * A CPR is more sensitive than most secrets already on this list; treat it
+ * the same as a password/token, never let it reach a --debug transcript.
+ * Matching segments are replaced with the literal `redacted-cpr` (no angle
+ * brackets/spaces, unlike the query-param placeholder — those would get
+ * percent-encoded by the pathname setter, below).
+ */
+const CPR_PATH_SEGMENT = /^\d{6}-?\d{4}$/;
+
+/** Sanitise a URL by redacting known-secret query-string values and any
+ *  CPR-shaped path segment. */
 export function sanitizeUrl(url: string): string {
   let parsed: URL;
   try {
@@ -154,6 +170,17 @@ export function sanitizeUrl(url: string): string {
       mutated = true;
     }
   }
+  // No angle brackets or spaces here (unlike the query-param placeholder
+  // above) — a URL's pathname setter percent-encodes those, which would
+  // turn a clean "redacted-cpr" into unreadable "%3Credacted...%3E" noise
+  // in every transcript line.
+  const segments = parsed.pathname.split('/');
+  const redactedSegments = segments.map((seg) => {
+    if (!CPR_PATH_SEGMENT.test(seg)) return seg;
+    mutated = true;
+    return 'redacted-cpr';
+  });
+  if (mutated) parsed.pathname = redactedSegments.join('/');
   return mutated ? parsed.toString() : url;
 }
 

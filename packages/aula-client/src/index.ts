@@ -38,6 +38,7 @@ export {
   AulaApiVersionError,
   AulaClientError,
   AulaStepUpRequiredError,
+  TabulexSessionError,
 } from './errors.ts';
 export {
   decodeHtmlEntities,
@@ -60,6 +61,9 @@ export {
   type NormalisedWeekPlanItem,
   SystematicClient,
   type SystematicOptions,
+  type TabulexChildAccess,
+  TabulexClient,
+  type TabulexOptions,
 } from './integrations/index.ts';
 export {
   isWidgetTokenExpiredResponse,

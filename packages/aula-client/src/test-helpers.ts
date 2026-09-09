@@ -36,7 +36,19 @@ export class FakeHttp {
       return undefined;
     },
     cookieHeader: async (_url: string): Promise<string> => '',
-    storeFromResponse: async (_h: Headers, _url: string): Promise<void> => {},
+    // Simplified vs. the real tough-cookie-backed jar: no domain/path
+    // scoping, just name→value (matching getCookieValue's own "any URL"
+    // simplification above). Good enough to test flows like TabulexClient's
+    // SSO handshake, where a test just needs "the FedAuth cookie now exists
+    // after this response".
+    storeFromResponse: async (headers: Headers, _url: string): Promise<void> => {
+      for (const sc of headers.getSetCookie()) {
+        const nameValue = sc.split(';', 1)[0] ?? '';
+        const eq = nameValue.indexOf('=');
+        if (eq <= 0) continue;
+        this.cookieValues.set(`*#${nameValue.slice(0, eq)}`, nameValue.slice(eq + 1));
+      }
+    },
   };
 
   enqueue(...rs: FakeResponse[]): this {
@@ -64,12 +76,58 @@ export class FakeHttp {
         `FakeHttp: no response queued for ${init.method ?? 'GET'} ${url} (already had ${this.requested.length - 1} call(s))`,
       );
     }
+    const headers = new Headers(r.headers ?? {});
+    await this.jar.storeFromResponse(headers, url);
     return {
       status: r.status,
       body: r.body ?? '',
       url,
-      headers: new Headers(r.headers ?? {}),
+      headers,
     };
+  }
+
+  /** Mirrors AulaHttpClient.followRedirects's manual redirect loop, built on
+   *  this fake's own `request`. Used by tests that drive a multi-hop chain
+   *  (e.g. TabulexClient's SSO handshake). */
+  async followRedirects(
+    url: string,
+    options: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: FakeRequest['body'];
+      maxHops?: number;
+    } = {},
+  ): Promise<{ history: { url: string; status: number }[]; final: AulaResponse }> {
+    const maxHops = options.maxHops ?? 10;
+    const history: { url: string; status: number }[] = [];
+    let currentUrl = url;
+    let currentOptions: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: FakeRequest['body'];
+    } = options;
+
+    for (let hop = 0; hop < maxHops; hop++) {
+      const response = await this.request(currentUrl, currentOptions);
+      history.push({ url: currentUrl, status: response.status });
+
+      if (response.status < 300 || response.status >= 400) {
+        return { history, final: response };
+      }
+
+      const location = response.headers.get('location');
+      if (!location) {
+        return { history, final: response };
+      }
+
+      currentUrl = new URL(location, currentUrl).toString();
+      const preserveMethod = response.status === 307 || response.status === 308;
+      currentOptions = preserveMethod
+        ? { ...options, headers: options.headers ?? {} }
+        : { headers: options.headers ?? {} };
+    }
+
+    throw new Error(`FakeHttp: redirect loop exceeded ${maxHops} hops at ${currentUrl}`);
   }
 
   /** Returned to tests as if it were a real AulaHttpClient. */

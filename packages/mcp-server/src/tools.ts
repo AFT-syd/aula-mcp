@@ -670,6 +670,155 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     },
   );
 
+  // --- aula.fravaer.tabulex_* -----------------------------------------------
+  //
+  // "Fravær - forældreindberetning" (widget 0047) — parent absence reporting
+  // via Tabulex. Unlike the ugeplan/opgaver/ugebrev providers above, Tabulex
+  // is session-based (WS-Federation → FedAuth cookies), not a per-call
+  // Bearer token — see TabulexClient's module docstring for the full
+  // handshake. `cpr` is the child's real CPR number, resolved from
+  // aula.fravaer.tabulex_boern; Tabulex uses it (not an Aula id) as the
+  // child identifier for every other call, exactly the same procedural role
+  // `institutionProfileId` plays for aula.presence.* calls.
+
+  const tabulexCprShape = {
+    ...integrationContextShape,
+    cpr: z
+      .string()
+      .min(1)
+      .describe(
+        "The child's CPR number, from aula.fravaer.tabulex_boern's `cpr` field. Tabulex " +
+          'uses this (not an Aula id) as the child identifier for every Fravær call. ' +
+          'Sensitive — do not restate it back to the user unless they explicitly ask for it.',
+      ),
+  } as const;
+
+  server.registerTool(
+    'aula.fravaer.tabulex_boern',
+    {
+      title: 'Tabulex Fravær — children with access',
+      description:
+        'List the guardian\'s children with access to Tabulex "Fravær - ' +
+        'forældreindberetning" (absence reporting, widget 0047). Each entry includes the ' +
+        "child's real CPR number (`cpr`) — required by every other aula.fravaer.tabulex_* " +
+        'call as the child identifier. Also reports `skoleFravaerAdgang`: false if the ' +
+        'institution has disabled parent absence-reporting for that child.',
+      inputSchema: integrationContextShape,
+    },
+    async (args) => {
+      const tabulex = await context.getTabulex();
+      return jsonContent(await tabulex.getPersonsAdgangTilBoern(await buildIntegrationCtx(args)));
+    },
+  );
+
+  server.registerTool(
+    'aula.fravaer.tabulex_idag',
+    {
+      title: 'Tabulex Fravær — today',
+      description: "Today's absence status for one child, from Tabulex.",
+      inputSchema: tabulexCprShape,
+    },
+    async (args) => {
+      const tabulex = await context.getTabulex();
+      return jsonContent(await tabulex.getFravaerIdag(await buildIntegrationCtx(args), args.cpr));
+    },
+  );
+
+  server.registerTool(
+    'aula.fravaer.tabulex_imorgen',
+    {
+      title: 'Tabulex Fravær — tomorrow',
+      description: "Tomorrow's absence status for one child, from Tabulex.",
+      inputSchema: tabulexCprShape,
+    },
+    async (args) => {
+      const tabulex = await context.getTabulex();
+      return jsonContent(
+        await tabulex.getFravaerImorgen(await buildIntegrationCtx(args), args.cpr),
+      );
+    },
+  );
+
+  server.registerTool(
+    'aula.fravaer.tabulex_skoledage',
+    {
+      title: 'Tabulex Fravær — upcoming school days',
+      description: 'Absence over the coming school days for one child, from Tabulex.',
+      inputSchema: tabulexCprShape,
+    },
+    async (args) => {
+      const tabulex = await context.getTabulex();
+      return jsonContent(
+        await tabulex.getFravaerSkoledage(await buildIntegrationCtx(args), args.cpr),
+      );
+    },
+  );
+
+  server.registerTool(
+    'aula.fravaer.tabulex_oversigt',
+    {
+      title: 'Tabulex Fravær — quarterly overview',
+      description: 'Quarterly absence statistics and history for one child, from Tabulex.',
+      inputSchema: {
+        ...tabulexCprShape,
+        aar: z.number().int().min(2000).describe('Year, e.g. 2026.'),
+        kvartal: z.number().int().min(1).max(4).describe('Quarter, 1-4.'),
+      },
+    },
+    async (args) => {
+      const tabulex = await context.getTabulex();
+      return jsonContent(
+        await tabulex.getFravaerOversigt(
+          await buildIntegrationCtx(args),
+          args.cpr,
+          args.aar,
+          args.kvartal,
+        ),
+      );
+    },
+  );
+
+  // --- aula.fravaer.tabulex_meld_syg (gated, write) -------------------------
+  //
+  // Same gate and the same reason as aula.presence.report_sick — and a
+  // stricter one: Tabulex's own UI has no undo for this action at all
+  // (Aula's report_sick can at least be taken back with sick:false; there is
+  // no equivalent "un-meld" call here). NEVER exercised against the live API
+  // during development — see TabulexClient's module docstring.
+
+  if (process.env.AULA_MCP_WRITE === '1') {
+    server.registerTool(
+      'aula.fravaer.tabulex_meld_syg',
+      {
+        title: 'Report a child sick via Tabulex Fravær (CANNOT be undone)',
+        description:
+          'Report a child sick for today or tomorrow via Tabulex "Fravær - ' +
+          'forældreindberetning" (widget 0047). WRITES to Tabulex — enabled when ' +
+          'AULA_MCP_WRITE=1. Tabulex has NO way to undo or cancel this once sent — unlike ' +
+          'aula.presence.report_sick there is no false/take-it-back equivalent. Confirm ' +
+          'the exact child and day with the user before calling; never call this from an ' +
+          'inferred or ambiguous mention that a child might be unwell.',
+        inputSchema: {
+          ...integrationContextShape,
+          cpr: z
+            .string()
+            .min(1)
+            .describe(
+              "The child's CPR number, from aula.fravaer.tabulex_boern's `cpr` field. " +
+                'Sensitive — do not restate it back to the user unless they explicitly ask.',
+            ),
+          when: z.enum(['today', 'tomorrow']).describe('Which day to report sick for.'),
+        },
+      },
+      async (args) => {
+        const tabulex = await context.getTabulex();
+        return jsonContent(
+          await tabulex.reportSick(await buildIntegrationCtx(args), args.cpr, args.when),
+        );
+      },
+    );
+  }
+
   server.registerTool(
     'aula.huskelisten.systematic',
     {

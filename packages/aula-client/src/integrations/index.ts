@@ -7,6 +7,7 @@ export {
 export { MeebookClient, type MeebookOptions } from './meebook.ts';
 export { MinUddannelseClient, type MinUddannelseOptions } from './min-uddannelse.ts';
 export { SystematicClient, type SystematicOptions } from './systematic.ts';
+export { type TabulexChildAccess, TabulexClient, type TabulexOptions } from './tabulex.ts';
 export {
   decodeHtmlEntities,
   type IntegrationContext,
