@@ -381,7 +381,7 @@ Cross-package-imports bruger workspace-navnet (`@aula-mcp/aula-auth`); Bun resol
 | Lag | Status | Noter |
 | --- | ------ | ----- |
 | `@aula-mcp/aula-auth` | ✅ unit-testet + live-verificeret | MitID APP + CODE_TOKEN + PASSWORD; macOS Keychain eller AES-GCM-fil. |
-| `@aula-mcp/aula-client` | ✅ unit-testet | Native Aula API + EasyIQ / EasyIQ SkolePortal / Meebook / Min Uddannelse / Systematic-plugins. |
+| `@aula-mcp/aula-client` | ✅ unit-testet | Native Aula API + EasyIQ / EasyIQ SkolePortal / Meebook / Min Uddannelse / Systematic / Tabulex-plugins. Tabulex ("Fravær", widget 0047) er kun læse-verificeret live mod ét regnskab/kommune — SSO-endpointet og widget-id'et antages nationalt faste (samme mønster som Min Uddannelses ene faste API-host), men er ikke uafhængigt bekræftet på tværs af kommuner. |
 | `@aula-mcp/mcp-server` | ✅ unit-testet + live-verificeret med Claude Code | Streamable HTTP-transport, stateful session. Single-user, loopback by default. |
 | `apps/cli` | ✅ unit-testet | QR-rendering, debug-transcripts, JSONL login-log. |
 
