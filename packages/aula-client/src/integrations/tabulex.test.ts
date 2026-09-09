@@ -17,11 +17,14 @@ import { TabulexClient } from './tabulex.ts';
 import type { IntegrationContext } from './types.ts';
 import { isoWeekString } from './types.ts';
 
+// Generic placeholder identifiers, matching integrations.test.ts's own ctx()
+// convention (sessionId 'cj', numeric guardianId '5000', childIds
+// [1234567], institutionCodes ['G12345']) — never a real account's values.
 function ctx(overrides: Partial<IntegrationContext> = {}): IntegrationContext {
   return {
     isoWeek: isoWeekString(new Date('2026-09-01T08:00:00Z')),
     sessionId: 'cj',
-    guardianId: 'cj',
+    guardianId: '5000',
     childIds: [1234567],
     childUserIds: ['u1234567'],
     institutionCodes: ['G12345'],
@@ -124,7 +127,7 @@ describe('TabulexClient — SSO handshake', () => {
     expect(http.requested[0]?.method).toBe('POST');
     const hop1Body = http.requested[0]?.body as URLSearchParams;
     expect(hop1Body.get('aulaToken')).toBe('WIDGET-TKN');
-    expect(hop1Body.get('sessionUUID')).toBe('cj');
+    expect(hop1Body.get('sessionUUID')).toBe('5000');
     expect(hop1Body.get('childFilter')).toBe('u1234567');
     expect(hop1Body.get('institutionFilter')).toBe('G12345');
     expect(hop1Body.get('Csrfp-Token')).toBe('CSRF-1');
