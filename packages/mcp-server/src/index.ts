@@ -5,4 +5,13 @@ export {
   type DiscoveredChild,
   type DiscoverManifest,
 } from './discover.ts';
+export {
+  type AuthState,
+  type AuthStore,
+  emptyAuthState,
+  FileAuthStore,
+  MemoryAuthStore,
+  type RevokeSummary,
+  revokeAuthState,
+} from './mcp-auth.ts';
 export { registerTools } from './tools.ts';

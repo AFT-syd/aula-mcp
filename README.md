@@ -156,6 +156,8 @@ cloudflared tunnel --url http://127.0.0.1:7878
 
 > ⚠️ **Tunnel-URL'en er offentligt tilgængelig så længe den kører** — hvis nogen gætter den, kan de styre dine Aula-tokens. Fint til en hurtig demo, men lad den ikke stå åben. Til en permanent setup, se næste sektion.
 
+Bemærk at Basic Auth i en reverse proxy (mulighed 2 nedenfor) **ikke** løser det for claude.ai: connector-opsætningen dér har kun et felt til URL og eventuelt OAuth client ID/secret — ingen adgangskode, API-nøgle eller header — og forbindelsen laves server-side fra Anthropics cloud, ikke fra din browser. Til permanent claude.ai-adgang, brug den indbyggede OAuth-server: [Mulighed 3](#mulighed-3-indbygget-oauth-server-permanent-claudeai-adgang).
+
 ---
 
 ## Self-hosting
@@ -240,7 +242,47 @@ aula.dithjem.dk {
 
 > ⚠️ Hvis du *skal* exposé serveren direkte (springe proxy-laget over) skal du eksplicit sætte `AULA_MCP_ALLOW_REMOTE=1` — det er en kontrolleret, tilsigtet handling, ikke et uheld.
 
-### Mulighed 3: Home Assistant add-on
+### Mulighed 3: Indbygget OAuth-server (permanent claude.ai-adgang)
+
+Til fjernklienter der kun taler OAuth — claude.ai i første række, men også Claude Code og Claude Desktop mod en fjern-URL — har serveren sin egen lille autorisationsserver indbygget. Den beder om **ét kodeord**, ikke MitID: din Aula-tillid er allerede etableret én gang med `aula login` og ligger krypteret på maskinen. Kodeordet afgør kun *hvem der må tale med MCP-serveren*.
+
+```sh
+# 1. Lav hash'en (kodeordet gemmes aldrig — kun argon2id-hash'en printes)
+aula auth set-password
+
+# 2. Læg de to variabler i servicens miljø, fx systemd EnvironmentFile
+AULA_MCP_AUTH_PASSWORD_HASH='$argon2id$v=19$m=65536,t=2,p=1$...'
+AULA_MCP_PUBLIC_URL='https://aula.dithjem.dk'     # URL'en klienten forbinder til
+AULA_MCP_ALLOW_REMOTE=1
+AULA_MCP_HOST=127.0.0.1                            # stadig bag din proxy
+```
+
+Tilføj derefter `https://aula.dithjem.dk/mcp` som custom connector i claude.ai. Klienten registrerer sig selv (RFC 7591), du indtaster kodeordet én gang i et login-vindue, og den holder forbindelsen ved lige med refresh-tokens bagefter.
+
+**Sikkerhed indbygget i defaults:**
+
+- `AULA_MCP_ALLOW_REMOTE=1` **uden** auth får serveren til at nægte at starte. At eksponere en rigtig families Aula-konto skal ikke kunne ske ved en forglemmelse. Fronter du selv med en authenticeret proxy, er `AULA_MCP_AUTH_DISABLED=1` det bevidste fravalg.
+- PKCE (S256) er påkrævet, og `redirect_uri` matches præcist — ingen præfiks-match, som er den klassiske open-redirect-fejl.
+- Udstedte tokens gemmes som SHA-256-**hashes** i `~/.config/aula-mcp/mcp-auth.json` (0600). Filen indeholder derfor ingen hemmelighed der kan bruges til noget. Refresh-tokens roteres ved hver brug.
+- Forkerte kodeord gør efterfølgende forsøg langsommere (op til 10 sek.) — men låser dig aldrig ude. En hård lockout ville lade enhver fremmed spærre dig selv ude ved bare at gætte forkert nok gange, og gaten her står mellem dig og fx at melde et barn sygt om morgenen.
+- En klient der er i brug bliver aldrig skubbet ud af klient-listen. Er alle 50 pladser optaget af aktive klienter, afvises nye registreringer (503) i stedet for at fortrænge nogen.
+
+**At lukke adgangen igen:**
+
+```sh
+aula auth revoke              # log alle klienter ud; de kan logge ind igen med kodeordet
+aula auth revoke --clients    # dropper også registreringerne; connectoren skal tilføjes på ny
+```
+
+`revoke` virker mod en **kørende** server — den skriver state-filen, og serveren læser den igen
+ved næste kald i stedet for at stole på det, den indlæste ved opstart. Ingen genstart nødvendig.
+Skifter du selve kodeordet, sker det samme automatisk: serveren opdager ved opstart at hash'en er
+en anden, og kasserer alle tokens udstedt under den gamle. Et kodeordsskifte er altså et rigtigt
+kodeordsskifte, ikke kun et nyt kodeord til næste login.
+- `/healthz` forbliver åben, så en uptime-monitor kan tjekke serveren uden token.
+- `AULA_MCP_PUBLIC_URL` skal være den URL klienten reelt bruger, inkl. eventuelt sti-præfiks — den bliver OAuth-issuer, og en forkert værdi giver en connector der ikke kan forbinde.
+
+### Mulighed 4: Home Assistant add-on
 
 Den nemmeste vej for HA-brugere. Add-on'en pakker `aula-mcp` ind så den kører som en del af din HA-installation og er tilgængelig fra HA's Voice/Assist + alle dine HA-automatiseringer. Hvis du har **Nabu Casa**, åbner det også for sikker fjernadgang via deres tunnel.
 
@@ -252,7 +294,7 @@ Korte stik:
 - `aula-mcp` taler både Streamable HTTP (`/mcp`) og den ældre SSE-dialekt (`/sse`) — HA's officielle [`mcp` (client) integration](https://www.home-assistant.io/integrations/mcp/) bruger SSE.
 - Login sker inde i add-on'ens egen sidebar-UI (MitID-QR + identitetsvalg).
 
-### Mulighed 4: VPS i Tyskland (Hetzner, Coolify)
+### Mulighed 5: VPS i Tyskland (Hetzner, Coolify)
 
 Hvis du allerede har en europæisk VPS (Hetzner, Scaleway, OVH) og en domæne — så er det bare en `git clone` + `bun install` + systemd-unit som mulighed 1.
 
@@ -260,6 +302,7 @@ Hvis du allerede har en europæisk VPS (Hetzner, Scaleway, OVH) og en domæne �
 
 - **Token-store**: gem en kryptert kopi af `~/.config/aula-mcp/tokens.json` + `.key` (eller Keychain-eksport på macOS). Mister du dem, skal du logge ind igen — ingen panik, men irriterende.
 - **AULA_MCP_KEY**: hvis du bruger fil-backenden i produktion, sæt en stærk `AULA_MCP_KEY` (env-var) og lad være med at committe den. Roterer du den, skal du re-loginne.
+- **MCP-kodeordet**: `AULA_MCP_AUTH_PASSWORD_HASH` er en hash — den kan ligge i en backup uden drama. Selve kodeordet findes kun i dit hoved eller din password manager. Vil du skifte det, kør `aula auth set-password` igen, udskift hash'en og genstart; serveren kasserer selv de tokens der blev udstedt under det gamle kodeord, så eksisterende klienter må logge ind på ny. Haster det, gør `aula auth revoke` det samme uden genstart. `mcp-auth.json` behøver ingen backup — den genopbygges når klienterne registrerer sig igen.
 - **Nye Aula-versioner**: Aula bumper deres API-version 1-2 gange om året. `aula-mcp` prober selv den nye version ved næste kald (intet manuelt arbejde), men hold et øje på release-noter for breaking changes der dukker op.
 
 ---
@@ -326,6 +369,7 @@ aula --help
 | `aula status` | Viser om der er tokens, deres udløbstid og den aktive identitet. Kontakter ikke netværket. Exit-kode 1 hvis der ingen tokens er. |
 | `aula whoami` | Indlæser tokens (refresher hvis nødvendigt), kalder `getProfilesByLogin` + `getProfileContext`. Smoke-test af at hele auth + client-pipelinen virker. |
 | `aula doctor` | Kører hvert read-endpoint igennem og rapporterer per-call status med svartid. Det hurtigste "virker det her?"-tjek. `--verbose` dumper wire-transcripten inline ved fejl. |
+| `aula auth revoke` | Invalér alle udstedte MCP-tokens, så forbundne klienter skal logge ind igen. Virker mod en kørende server. `--clients` fjerner også klient-registreringerne. |
 | `aula log` | Seneste login-forsøg (success/failure, timestamps, fejlklasse). |
 | `aula transcript` | Inspicér opfangede `--debug`-transcripts; `prune` beholder de seneste N (default 10). |
 | `aula logout` | Sletter de gemte tokens. Krypteringsnøglen beholdes så næste login genbruger den. |
@@ -355,7 +399,10 @@ Komplet hjælp med eksempler: `pnpm aula --help`
 | `AULA_MCP_RAW=1` | off | Aktiverer `aula.raw_request` escape-hatch-toolet. |
 | `AULA_MCP_WRITE=1` | off | Aktiverer skrive-tools (`aula.presence.set_template` — sæt komme/gå-tider). Serveren er read-only uden den. |
 | `AULA_MCP_LOG=1` | off | Verbose console-logs fra auth/client-lagene. |
-| `AULA_MCP_ALLOW_REMOTE=1` | off | Tillader at binde til ikke-loopback adresser (fx bag en reverse proxy). |
+| `AULA_MCP_ALLOW_REMOTE=1` | off | Tillader at binde til ikke-loopback adresser (fx bag en reverse proxy). Kræver auth — se de tre næste. |
+| `AULA_MCP_AUTH_PASSWORD_HASH` | unset | argon2id-hash fra `aula auth set-password`. Slår den indbyggede OAuth-server til, så claude.ai kan forbinde. |
+| `AULA_MCP_PUBLIC_URL` | unset | Den offentlige URL klienterne forbinder til, inkl. sti-præfiks. Bliver OAuth-issuer. Påkrævet sammen med hash'en. |
+| `AULA_MCP_AUTH_DISABLED=1` | off | Bevidst fravalg af indbygget auth ved fjernadgang — kun hvis en authenticeret proxy foran klarer det. |
 
 ### Wire-transcripts
 
@@ -419,6 +466,8 @@ Et par issues fra `scaarup/aula`s tracker som jeg har taget højde for:
 | `aula doctor` siger `Aula API v22 → 410` | API-versionen er bumpet. Kør `aula doctor` igen — `AulaClient` prober frem og husker. |
 | `aula status` viser `expired N min ago` | Tokens er udløbet siden sidste brug. Et hvilket som helst read-kald (eller `aula doctor`) refresher dem automatisk. |
 | MCP-server: `Refusing to bind to non-loopback address` | Du har sat `AULA_MCP_HOST` til `0.0.0.0` eller lignende. Serveren er single-user; alle der kan ramme `/mcp` bliver dig. Sæt `AULA_MCP_ALLOW_REMOTE=1` hvis du forstår implikationerne. |
+| MCP-server: `Refusing to start: AULA_MCP_ALLOW_REMOTE=1 without authentication` | Fjernadgang uden nogen form for auth. Kør `aula auth set-password` og sæt `AULA_MCP_AUTH_PASSWORD_HASH` + `AULA_MCP_PUBLIC_URL` — eller `AULA_MCP_AUTH_DISABLED=1` hvis en authenticeret proxy foran allerede klarer det. |
+| claude.ai: connector kan ikke forbinde efter login | Tjek at `AULA_MCP_PUBLIC_URL` er præcis den URL du indsatte i claude.ai (inkl. `https://` og eventuelt sti-præfiks, uden `/mcp`). Den bliver OAuth-issuer, og klienten afviser et mismatch. |
 
 Når noget fejler er JSONL-transcripten i `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl` (efter `--debug`) det første sted at kigge. `aula transcript view <file>` pretty-printer den.
 

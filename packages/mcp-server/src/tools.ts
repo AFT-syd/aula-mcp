@@ -6,12 +6,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomBase64Url } from '@aula-mcp/aula-auth';
 import {
   AulaStepUpRequiredError,
   isoDate,
   isoWeekString,
   isoWeekToMonday,
   PRESENCE_STATUS_CODE,
+  type TabulexChildAccess,
 } from '@aula-mcp/aula-client';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -87,6 +89,86 @@ export function validateSetTemplateArgs(args: SetTemplateArgs): string[] {
     problems.push(`repeat "${repeat}" requires repeatUntil (the last date the repeat applies).`);
   }
   return problems;
+}
+
+/**
+ * Strip the passthrough `raw` object from a Tabulex record.
+ *
+ * `raw` is TabulexClient keeping faith with the upstream response, which is
+ * right for a library and wrong for a tool result: what it contains on an
+ * actual absence day has never been observed, so it cannot be said to be
+ * CPR-free. The mapped fields carry everything the model needs.
+ */
+export function stripTabulexRaw<T extends { raw: unknown }>(value: T): Omit<T, 'raw'> {
+  const { raw: _raw, ...rest } = value;
+  return rest;
+}
+
+export interface TabulexChildRefs {
+  /** The subset of a child entry that may leave this server. */
+  publicEntry(child: TabulexChildAccess): Record<string, unknown>;
+  /** Resolve a ref back to the CPR Tabulex wants. Throws if unknown. */
+  cprFor(ref: string): string;
+}
+
+/**
+ * Opaque child handles for the Tabulex tools.
+ *
+ * Tabulex identifies a child by their real CPR number — it is the path segment
+ * in every Fravaer URL and the one field `meld_syg` PUTs. That is fine inside
+ * this process; it is not fine on the tool surface. Everything a tool returns
+ * travels to whichever model is driving the server and lands in a conversation
+ * history the operator does not control, and a child's CPR is a different
+ * category of data from "was he away on Tuesday". Nothing in absence reporting
+ * needs the number itself, only the ability to name *which* child — so the
+ * tools trade in a ref and the CPR stays behind this boundary.
+ *
+ * Refs live for one server run and are deliberately never persisted: a ref
+ * that outlived a restart would be a CPR cache on disk in all but name.
+ */
+export function createTabulexChildRefs(): TabulexChildRefs {
+  const byRef = new Map<string, string>();
+
+  const refFor = (cpr: string): string => {
+    for (const [ref, known] of byRef) {
+      if (known === cpr) return ref;
+    }
+    const ref = `tbx_${randomBase64Url(6)}`;
+    byRef.set(ref, cpr);
+    return ref;
+  };
+
+  return {
+    // An allowlist rather than a "delete the CPR" filter, so a field added
+    // upstream is withheld until someone decides it should travel. `cpr` and
+    // `raw` (which carries `Cpr` verbatim) are the reason this exists.
+    // `foedselsdato`, `pige` and `skoleBestyrelsesValgAdgang` are left out
+    // too: a birth date is the first six digits of the CPR, and none of the
+    // three does anything for absence reporting.
+    publicEntry(child) {
+      return {
+        ...(child.cpr !== undefined ? { child_ref: refFor(child.cpr) } : {}),
+        ...(child.fornavn !== undefined ? { fornavn: child.fornavn } : {}),
+        ...(child.efternavn !== undefined ? { efternavn: child.efternavn } : {}),
+        ...(child.klasse !== undefined ? { klasse: child.klasse } : {}),
+        ...(child.skoleNavn !== undefined ? { skoleNavn: child.skoleNavn } : {}),
+        ...(child.skoleKode !== undefined ? { skoleKode: child.skoleKode } : {}),
+        ...(child.skoleFravaerAdgang !== undefined
+          ? { skoleFravaerAdgang: child.skoleFravaerAdgang }
+          : {}),
+      };
+    },
+    cprFor(ref) {
+      const cpr = byRef.get(ref);
+      if (cpr === undefined) {
+        throw new Error(
+          `Unknown child_ref "${ref}". Call aula.fravaer.tabulex_boern first — child refs are ` +
+            'issued per server run and do not survive a restart.',
+        );
+      }
+      return cpr;
+    },
+  };
 }
 
 export function registerTools(server: McpServer, context: AulaContext): void {
@@ -676,20 +758,33 @@ export function registerTools(server: McpServer, context: AulaContext): void {
   // via Tabulex. Unlike the ugeplan/opgaver/ugebrev providers above, Tabulex
   // is session-based (WS-Federation → FedAuth cookies), not a per-call
   // Bearer token — see TabulexClient's module docstring for the full
-  // handshake. `cpr` is the child's real CPR number, resolved from
-  // aula.fravaer.tabulex_boern; Tabulex uses it (not an Aula id) as the
-  // child identifier for every other call, exactly the same procedural role
-  // `institutionProfileId` plays for aula.presence.* calls.
+  // handshake.
+  //
+  // Tabulex identifies a child by their real CPR number — it is the path
+  // segment in every Fravær URL, and the one field `meld_syg` PUTs. That is
+  // fine inside this process; it is not fine on the tool surface. Everything
+  // a tool returns travels to whichever model is driving the server and lands
+  // in a conversation history the operator does not control, and a child's CPR
+  // is a different category of data from "was he away on Tuesday". Nothing in
+  // absence reporting actually needs the number itself — only the ability to
+  // name *which* child — so the tools trade in an opaque `child_ref` and the
+  // CPR stays here.
+  //
+  // Refs are per server run and deliberately not persisted: they are minted by
+  // aula.fravaer.tabulex_boern, which the caller has to go through anyway, and
+  // a ref that outlived a restart would be a CPR cache on disk in all but name.
 
-  const tabulexCprShape = {
+  const childRefs = createTabulexChildRefs();
+
+  const tabulexChildRefShape = {
     ...integrationContextShape,
-    cpr: z
+    child_ref: z
       .string()
       .min(1)
       .describe(
-        "The child's CPR number, from aula.fravaer.tabulex_boern's `cpr` field. Tabulex " +
-          'uses this (not an Aula id) as the child identifier for every Fravær call. ' +
-          'Sensitive — do not restate it back to the user unless they explicitly ask for it.',
+        "An opaque reference to the child, from aula.fravaer.tabulex_boern's `child_ref` " +
+          'field. Valid only for the current server run — call tabulex_boern again if it ' +
+          'is rejected.',
       ),
   } as const;
 
@@ -699,15 +794,16 @@ export function registerTools(server: McpServer, context: AulaContext): void {
       title: 'Tabulex Fravær — children with access',
       description:
         'List the guardian\'s children with access to Tabulex "Fravær - ' +
-        'forældreindberetning" (absence reporting, widget 0047). Each entry includes the ' +
-        "child's real CPR number (`cpr`) — required by every other aula.fravaer.tabulex_* " +
-        'call as the child identifier. Also reports `skoleFravaerAdgang`: false if the ' +
-        'institution has disabled parent absence-reporting for that child.',
+        'forældreindberetning" (absence reporting, widget 0047). Each entry has a ' +
+        '`child_ref` — an opaque handle required by every other aula.fravaer.tabulex_* ' +
+        'call. Also reports `skoleFravaerAdgang`: false if the institution has disabled ' +
+        'parent absence-reporting for that child.',
       inputSchema: integrationContextShape,
     },
     async (args) => {
       const tabulex = await context.getTabulex();
-      return jsonContent(await tabulex.getPersonsAdgangTilBoern(await buildIntegrationCtx(args)));
+      const children = await tabulex.getPersonsAdgangTilBoern(await buildIntegrationCtx(args));
+      return jsonContent(children.map((child) => childRefs.publicEntry(child)));
     },
   );
 
@@ -716,11 +812,14 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     {
       title: 'Tabulex Fravær — today',
       description: "Today's absence status for one child, from Tabulex.",
-      inputSchema: tabulexCprShape,
+      inputSchema: tabulexChildRefShape,
     },
     async (args) => {
+      const cpr = childRefs.cprFor(args.child_ref);
       const tabulex = await context.getTabulex();
-      return jsonContent(await tabulex.getFravaerIdag(await buildIntegrationCtx(args), args.cpr));
+      return jsonContent(
+        stripTabulexRaw(await tabulex.getFravaerIdag(await buildIntegrationCtx(args), cpr)),
+      );
     },
   );
 
@@ -729,12 +828,13 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     {
       title: 'Tabulex Fravær — tomorrow',
       description: "Tomorrow's absence status for one child, from Tabulex.",
-      inputSchema: tabulexCprShape,
+      inputSchema: tabulexChildRefShape,
     },
     async (args) => {
+      const cpr = childRefs.cprFor(args.child_ref);
       const tabulex = await context.getTabulex();
       return jsonContent(
-        await tabulex.getFravaerImorgen(await buildIntegrationCtx(args), args.cpr),
+        stripTabulexRaw(await tabulex.getFravaerImorgen(await buildIntegrationCtx(args), cpr)),
       );
     },
   );
@@ -744,13 +844,12 @@ export function registerTools(server: McpServer, context: AulaContext): void {
     {
       title: 'Tabulex Fravær — upcoming school days',
       description: 'Absence over the coming school days for one child, from Tabulex.',
-      inputSchema: tabulexCprShape,
+      inputSchema: tabulexChildRefShape,
     },
     async (args) => {
+      const cpr = childRefs.cprFor(args.child_ref);
       const tabulex = await context.getTabulex();
-      return jsonContent(
-        await tabulex.getFravaerSkoledage(await buildIntegrationCtx(args), args.cpr),
-      );
+      return jsonContent(await tabulex.getFravaerSkoledage(await buildIntegrationCtx(args), cpr));
     },
   );
 
@@ -760,17 +859,18 @@ export function registerTools(server: McpServer, context: AulaContext): void {
       title: 'Tabulex Fravær — quarterly overview',
       description: 'Quarterly absence statistics and history for one child, from Tabulex.',
       inputSchema: {
-        ...tabulexCprShape,
+        ...tabulexChildRefShape,
         aar: z.number().int().min(2000).describe('Year, e.g. 2026.'),
         kvartal: z.number().int().min(1).max(4).describe('Quarter, 1-4.'),
       },
     },
     async (args) => {
+      const cpr = childRefs.cprFor(args.child_ref);
       const tabulex = await context.getTabulex();
       return jsonContent(
         await tabulex.getFravaerOversigt(
           await buildIntegrationCtx(args),
-          args.cpr,
+          cpr,
           args.aar,
           args.kvartal,
         ),
@@ -799,21 +899,15 @@ export function registerTools(server: McpServer, context: AulaContext): void {
           'the exact child and day with the user before calling; never call this from an ' +
           'inferred or ambiguous mention that a child might be unwell.',
         inputSchema: {
-          ...integrationContextShape,
-          cpr: z
-            .string()
-            .min(1)
-            .describe(
-              "The child's CPR number, from aula.fravaer.tabulex_boern's `cpr` field. " +
-                'Sensitive — do not restate it back to the user unless they explicitly ask.',
-            ),
+          ...tabulexChildRefShape,
           when: z.enum(['today', 'tomorrow']).describe('Which day to report sick for.'),
         },
       },
       async (args) => {
+        const cpr = childRefs.cprFor(args.child_ref);
         const tabulex = await context.getTabulex();
         return jsonContent(
-          await tabulex.reportSick(await buildIntegrationCtx(args), args.cpr, args.when),
+          await tabulex.reportSick(await buildIntegrationCtx(args), cpr, args.when),
         );
       },
     );

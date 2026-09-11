@@ -320,7 +320,8 @@ function buildCapabilities(
       summary:
         'Absence reporting ("Fravær - forældreindberetning", widget 0047) via Tabulex — ' +
         "separate from Aula's own presence/komme-gå system. Call aula.fravaer.tabulex_boern " +
-        "first to get each child's cpr, then the other aula.fravaer.tabulex_* tools.",
+        "first to get each child's `child_ref`, then pass that to the other " +
+        'aula.fravaer.tabulex_* tools. Refs are valid for the current server run only.',
       tools: writeEnabled
         ? [
             'aula.fravaer.tabulex_boern',

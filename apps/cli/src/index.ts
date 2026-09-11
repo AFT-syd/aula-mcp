@@ -12,10 +12,13 @@
  *   aula transcript view <file> [--json]
  *   aula transcript list [--json]
  *   aula transcript prune [--keep N] [--dry-run]
+ *   aula auth set-password [--stdin]
+ *   aula auth revoke [--clients] [--file <path>]
  *   aula logout
  *   aula --help
  */
 
+import { runAuthRevoke, runAuthSetPassword } from './commands/auth.ts';
 import { runDoctor } from './commands/doctor.ts';
 import { runLog } from './commands/log.ts';
 import { runLogin } from './commands/login.ts';
@@ -50,6 +53,8 @@ ${fmt.bold('Usage')}:
   aula transcript list [--json]
   aula transcript view <file> [--json]
   aula transcript prune [--keep N] [--dry-run]
+  aula auth set-password [--stdin]
+  aula auth revoke [--clients] [--file <path>]
   aula logout
   aula --help
 
@@ -69,6 +74,16 @@ ${fmt.bold('Notes')}:
     broker session is still alive; falls back to "run aula login" when
     not. Manual recovery tool — rarely needed since the plain
     refresh_token grant preserves sensitive scope.
+  • aula auth set-password — mint the argon2id hash for
+    AULA_MCP_AUTH_PASSWORD_HASH. Required before the server will bind to
+    a non-loopback address (AULA_MCP_ALLOW_REMOTE=1); it turns on the
+    built-in OAuth server that claude.ai and Claude Code authenticate
+    against. The password is never stored — only its hash is printed.
+  • aula auth revoke — invalidate every token the server has issued, so
+    connected clients must sign in again. Takes effect on a running
+    server without a restart. Add --clients to drop the client
+    registrations too (then the connector must be re-added in claude.ai).
+    Changing the password and restarting revokes old tokens as well.
   • aula tokens export <dir>  — write tokens.json + .key into <dir> for
     transfer (always re-encrypts with a fresh AES-GCM key). Pair with
     aula tokens import <dir> on the other machine, or scp the two files
@@ -139,6 +154,25 @@ async function main(): Promise<void> {
         default:
           process.stderr.write(`Unknown tokens subcommand: ${sub ?? '<missing>'}\n`);
           process.stderr.write('Try: aula tokens {export <dir>|import <dir>}\n');
+          process.exit(2);
+      }
+      break;
+    }
+    case 'auth': {
+      const sub = args.positional[0];
+      switch (sub) {
+        case 'set-password':
+          await runAuthSetPassword({ stdin: args.flags.stdin === true });
+          break;
+        case 'revoke':
+          await runAuthRevoke({
+            clients: args.flags.clients === true,
+            file: typeof args.flags.file === 'string' ? args.flags.file : undefined,
+          });
+          break;
+        default:
+          process.stderr.write(`Unknown auth subcommand: ${sub ?? '<missing>'}\n`);
+          process.stderr.write('Try: aula auth set-password [--stdin] | aula auth revoke\n');
           process.exit(2);
       }
       break;

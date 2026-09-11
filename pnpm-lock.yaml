@@ -36,6 +36,9 @@ importers:
       '@aula-mcp/aula-client':
         specifier: workspace:*
         version: link:../../packages/aula-client
+      '@aula-mcp/mcp-server':
+        specifier: workspace:*
+        version: link:../../packages/mcp-server
       qrcode-terminal:
         specifier: ^0.12.0
         version: 0.12.0

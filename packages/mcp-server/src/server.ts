@@ -26,7 +26,17 @@
  *   AULA_MCP_LOG=1            — verbose console logs from auth/client layers
  *   AULA_MCP_ALLOW_REMOTE=1   — allow binding to non-loopback addresses (refuses
  *                               by default; the server is single-user and any
- *                               peer with /mcp access can drive your tokens)
+ *                               peer with /mcp access can drive your tokens).
+ *                               Requires authentication — see below.
+ *   AULA_MCP_PUBLIC_URL       — externally visible base URL clients connect to
+ *                               (e.g. https://host.tailnet.ts.net/aula). Used
+ *                               as the OAuth issuer; required with auth on.
+ *   AULA_MCP_AUTH_PASSWORD_HASH — argon2id hash from `aula auth set-password`.
+ *                               Turns on the built-in OAuth authorization
+ *                               server that remote clients (claude.ai) use.
+ *   AULA_MCP_AUTH_DISABLED=1  — conscious opt-out: run remote WITHOUT built-in
+ *                               auth because an authenticated reverse proxy in
+ *                               front already handles it.
  *   AULA_MCP_SSE_MAX_SESSIONS — max concurrent legacy /sse sessions before new
  *                               GET /sse requests get 503'd (default 16)
  *   AULA_MCP_SSE_IDLE_MS      — evict /sse sessions idle for >this many ms
@@ -40,16 +50,24 @@ import { consoleLogger, silentLogger } from '@aula-mcp/aula-auth';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { assertRemoteAuthConfigured, createAuthProvider, resolveAuthConfig } from './mcp-auth.ts';
 import { createMcpApp, type McpApp } from './setup.ts';
 import { createSetupApp } from './setup-ui.ts';
 import { HonoSseTransport } from './sse-transport.ts';
 
 const PORT = Number(process.env.AULA_MCP_PORT ?? 7878);
 const HOST = process.env.AULA_MCP_HOST ?? '127.0.0.1';
+const ALLOW_REMOTE = process.env.AULA_MCP_ALLOW_REMOTE === '1';
 
 const logger = process.env.AULA_MCP_LOG === '1' ? consoleLogger('aula-mcp') : silentLogger;
 
 assertSafeBindAddress(HOST);
+
+// Binding off-box is only safe if *something* authenticates callers. This
+// refuses to start when remote access is requested without either the built-in
+// authorization server or an explicit "my proxy handles it" opt-out.
+const authConfig = resolveAuthConfig();
+assertRemoteAuthConfigured({ allowRemote: ALLOW_REMOTE, auth: authConfig, logger });
 
 const { mcp } = createMcpApp({ logger });
 
@@ -67,6 +85,16 @@ const transport = new WebStandardStreamableHTTPServerTransport({
 await mcp.connect(transport);
 
 const app = new Hono();
+
+// Auth first: middleware only wraps handlers registered after it. `/healthz`
+// and the OAuth endpoints themselves stay open — the health check is what
+// Uptime Kuma polls, and it deliberately reveals nothing but liveness.
+if (authConfig.config) {
+  const auth = await createAuthProvider({ config: authConfig.config, logger });
+  app.use('*', auth.middleware);
+  app.route('/', auth.routes);
+  logger.info('mcp-auth.enabled', { issuer: authConfig.config.publicUrl });
+}
 
 app.get('/healthz', (c) => c.json({ ok: true, name: 'aula-mcp' }));
 
