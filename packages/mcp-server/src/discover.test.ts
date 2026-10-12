@@ -211,6 +211,12 @@ describe('buildDiscoverManifest', () => {
     expect(hint).toContain('aula.calendar.events profileIds');
     expect(hint).not.toMatch(/userId[^.]*for[^.]*profileIds/);
   });
+
+  test('whichSource separates the skoleskema timetable from the ugeplan/ugebrev text', async () => {
+    const m = await buildDiscoverManifest(fakeContext());
+    expect(m.usage.whichSource).toMatch(/skoleskema[^.]*aula\.calendar\.events/);
+    expect(m.capabilities.calendar?.summary).toContain('Not the teacher-written weekly letter');
+  });
 });
 
 describe('buildDiscoverManifest — probe', () => {
