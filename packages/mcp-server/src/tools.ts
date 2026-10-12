@@ -6,7 +6,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AulaPost } from '@aula-mcp/aula-client';
+import type { AulaPost, CalendarEvent } from '@aula-mcp/aula-client';
 import {
   AulaStepUpRequiredError,
   htmlToText,
@@ -197,6 +197,36 @@ export interface SetTemplateArgs {
   selfDeciderEndTime?: string | undefined;
   repeat?: 'never' | 'weekly' | 'every_2_weeks' | undefined;
   repeatUntil?: string | undefined;
+}
+
+/** A calendar event plus the siblings that occupy exactly the same slot. */
+export type AnnotatedCalendarEvent = CalendarEvent & {
+  parallelWith?: { id?: CalendarEvent['id']; title?: string | undefined }[];
+};
+
+/**
+ * Add `parallelWith` to calendar events that share start, end and children
+ * with another event. The same lesson typically comes back twice (subject plus
+ * support staff or a parallel group) under different ids and titles; agents
+ * given both silently picked one. Nothing is merged or dropped. Events for
+ * different children, or with no `belongsToProfiles`, are never grouped.
+ */
+export function annotateParallelEvents(events: readonly CalendarEvent[]): AnnotatedCalendarEvent[] {
+  const slotOf = (e: CalendarEvent): string | undefined =>
+    e.belongsToProfiles?.length
+      ? `${e.startDateTime}|${e.endDateTime}|${[...e.belongsToProfiles].sort((a, b) => a - b)}`
+      : undefined;
+  const bySlot = new Map<string, CalendarEvent[]>();
+  for (const e of events) {
+    const slot = slotOf(e);
+    if (slot !== undefined) bySlot.set(slot, [...(bySlot.get(slot) ?? []), e]);
+  }
+  return events.map((e) => {
+    const slot = slotOf(e);
+    const siblings = slot === undefined ? [] : (bySlot.get(slot) ?? []).filter((o) => o !== e);
+    if (siblings.length === 0) return e;
+    return { ...e, parallelWith: siblings.map(({ id, title }) => ({ id, title })) };
+  });
 }
 
 /**
@@ -625,7 +655,10 @@ export function registerTools(server: McpServer, context: AulaContext): void {
         'Call aula.discover first and pass children[].id as profileIds. ' +
         'Pass `range` for a preset window (today/tomorrow/this_week/next_week) ' +
         'OR `start`+`end` for a specific window. Timestamps are formatted as Aula ' +
-        'expects: "YYYY-MM-DD HH:MM:SS.0000+ZZZZ". Aula uses Europe/Copenhagen.',
+        'expects: "YYYY-MM-DD HH:MM:SS.0000+ZZZZ". Aula uses Europe/Copenhagen. The same ' +
+        'lesson often appears twice (the subject plus support staff or a parallel group); ' +
+        'events with the exact same start/end for the same child carry `parallelWith` ' +
+        'naming the sibling(s) — show all of them rather than picking one.',
       inputSchema: {
         profileIds: z
           .array(z.number().int().positive())
@@ -658,7 +691,7 @@ export function registerTools(server: McpServer, context: AulaContext): void {
         end,
         ...(args.resourceIds ? { resourceIds: args.resourceIds } : {}),
       });
-      return jsonContent(events);
+      return jsonContent(annotateParallelEvents(events));
     },
   );
 

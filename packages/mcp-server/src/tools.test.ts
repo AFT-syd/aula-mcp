@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { htmlToText } from '@aula-mcp/aula-client';
-import { registerTools, slimPost, validateSetTemplateArgs } from './tools.ts';
+import { type CalendarEvent, htmlToText } from '@aula-mcp/aula-client';
+import {
+  annotateParallelEvents,
+  registerTools,
+  slimPost,
+  validateSetTemplateArgs,
+} from './tools.ts';
 
 describe('validateSetTemplateArgs', () => {
   test('picked_up_by needs pickedUpBy', () => {
@@ -257,5 +262,51 @@ describe('slimPost', () => {
     });
     expect(slim.attachments).toHaveLength(1);
     expect(slim.attachments?.[0]?.name).toBe('ok.pdf');
+  });
+});
+
+describe('annotateParallelEvents', () => {
+  const lesson = (over: Partial<CalendarEvent> = {}): CalendarEvent => ({
+    type: 'lesson',
+    startDateTime: '2026-09-16T06:00:00.0000+00:00',
+    endDateTime: '2026-09-16T07:30:00.0000+00:00',
+    belongsToProfiles: [1000],
+    ...over,
+  });
+
+  test('events in the same slot name each other, and nothing is dropped', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'DAN' }),
+      lesson({ id: 2, title: 'PAED' }),
+      lesson({ id: 3, title: 'UDESK' }),
+    ]);
+    expect(out).toHaveLength(3);
+    expect(out[0]?.parallelWith).toEqual([
+      { id: 2, title: 'PAED' },
+      { id: 3, title: 'UDESK' },
+    ]);
+    expect(out[2]?.parallelWith).toEqual([
+      { id: 1, title: 'DAN' },
+      { id: 2, title: 'PAED' },
+    ]);
+    expect(out[0]?.title).toBe('DAN');
+  });
+
+  test('a lesson on its own is returned unchanged', () => {
+    const alone = lesson({ id: 1, title: 'DAN' });
+    const later = lesson({ id: 2, startDateTime: '2026-09-16T08:00:00.0000+00:00' });
+    const out = annotateParallelEvents([alone, later]);
+    expect(out[0]).toBe(alone);
+    expect(out[1]).toBe(later);
+  });
+
+  test('different children at the same time, or events with no child, are not parallel', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, belongsToProfiles: [1000] }),
+      lesson({ id: 2, belongsToProfiles: [1001] }),
+      lesson({ id: 3, belongsToProfiles: [] }),
+      lesson({ id: 4, belongsToProfiles: [] }),
+    ]);
+    expect(out.some((e) => e.parallelWith !== undefined)).toBe(false);
   });
 });

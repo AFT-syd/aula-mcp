@@ -278,6 +278,7 @@ export interface CalendarLessonParticipant {
 }
 
 export interface CalendarEvent {
+  id?: number | string;
   type: 'lesson' | 'event' | string;
   title?: string;
   startDateTime: string;
