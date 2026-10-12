@@ -164,6 +164,95 @@ describe('TabulexClient — SSO handshake', () => {
     );
   });
 
+  test('a FedAuth cookie already in the shared jar skips the handshake for a brand-new client instance', async () => {
+    // Mirrors what the live test measured 2026-10-02: AulaContext.getTabulex()
+    // hands out a fresh TabulexClient per call (sessionEstablished starts
+    // false on each one), while the cookie jar — shared via the same
+    // AulaHttpClient instance across every TabulexClient built against it —
+    // already carries FedAuth from an earlier call. 4 tool calls measured as
+    // 27 HTTP requests because the old ensureSession() only ever checked its
+    // own in-memory flag, never the jar.
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.setCookie('XSRF-TOKEN', 'XSRF-1');
+    http.setCookie('FedAuth', 'already-established-value');
+    // Only the actual API call is queued — no SSO hops at all. If
+    // ensureSession() still runs the handshake, FakeHttp throws "no response
+    // queued" for the first (SSO-start) request.
+    http.enqueue({ status: 200, body: '[]' });
+
+    const freshClient = new TabulexClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    await freshClient.getPersonsAdgangTilBoern(ctx());
+
+    expect(http.requested).toHaveLength(1);
+    expect(http.requested[0]?.url).toBe('https://foraeldre.tabulex.net/api/PersonsAdgangTilBoern');
+  });
+
+  test('a session adopted from the jar but dead server-side is re-established and the call retried', async () => {
+    // The other half of reusing the session. Checking the jar stops the needless
+    // handshakes, but a FedAuth cookie has no client-visible expiry, so the
+    // jar keeps handing out a cookie Tabulex may already have forgotten.
+    // Without the retry, ensureSession()'s early return meant the handshake
+    // never ran again for the lifetime of the process — and this server runs
+    // for days — so a dead session wedged until restart.
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.setCookie('XSRF-TOKEN', 'XSRF-1');
+    http.setCookie('FedAuth', 'stale-value-tabulex-has-forgotten');
+    http
+      // The adopted session is refused...
+      .enqueue({ status: 401, body: '<html><body>sign in</body></html>' })
+      // ...so the client must clear it and run the handshake for real.
+      .enqueue(AUTO_POST_FORM_HOP)
+      .enqueue(LANDING_HOP_WITH_FEDAUTH)
+      .enqueue({ status: 200, body: '[]' });
+
+    const client = new TabulexClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    const result = await client.getPersonsAdgangTilBoern(ctx());
+
+    expect(result).toEqual([]);
+    expect(http.requested).toHaveLength(4);
+    expect(http.requested[0]?.url).toBe('https://foraeldre.tabulex.net/api/PersonsAdgangTilBoern');
+    expect(http.requested[1]?.url).toContain('saml.borger.tabulex.dk');
+    expect(http.requested[3]?.url).toBe('https://foraeldre.tabulex.net/api/PersonsAdgangTilBoern');
+    // The stale cookie was actually removed, not merely overwritten — that
+    // removal is what makes the re-handshake possible.
+    expect(await http.jar.getCookieValue('https://foraeldre.tabulex.net', 'FedAuth')).toBe(
+      'fake-fedauth-value',
+    );
+  });
+
+  test('a freshly established session is NOT retried — a real failure must not double the IdP load', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.setCookie('XSRF-TOKEN', 'XSRF-1');
+    http.enqueue(AUTO_POST_FORM_HOP).enqueue(LANDING_HOP_WITH_FEDAUTH).enqueue({
+      status: 500,
+      body: 'upstream exploded',
+    });
+
+    const client = new TabulexClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    await expect(client.getPersonsAdgangTilBoern(ctx())).rejects.toThrow(/status 500/);
+    // 3 requests: two handshake hops + the one failed API call. No second
+    // handshake, no second API call.
+    expect(http.requested).toHaveLength(3);
+  });
+
+  test('reportSick is never retried — re-sending a write Tabulex cannot undo is worse than the error', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.setCookie('XSRF-TOKEN', 'XSRF-1');
+    http.setCookie('FedAuth', 'stale-value-tabulex-has-forgotten');
+    http.enqueue({ status: 401, body: '<html><body>sign in</body></html>' });
+
+    const client = new TabulexClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    await expect(client.reportSick(ctx(), '0101209999', 'today')).rejects.toThrow(/status 401/);
+    // Exactly one request: the PUT. A retry here could land the same
+    // irreversible sick report twice.
+    expect(http.requested).toHaveLength(1);
+    expect(http.requested[0]?.method).toBe('PUT');
+  });
+
   test('reportSick PUTs the CPR-only body to the right MeldSyg endpoint', async () => {
     const http = new FakeHttp();
     http.setCookie('Csrfp-Token', 'CSRF-1');
@@ -234,5 +323,26 @@ describe('TabulexClient — SSO handshake', () => {
     await expect(client.getPersonsAdgangTilBoern(ctx())).rejects.toThrow(/no form to continue/);
     expect(widgets.refreshCalls).toBe(0);
     expect(http.requested).toHaveLength(1);
+  });
+});
+
+describe('TabulexClient — CPR in failures', () => {
+  test('a failed Fravær call does not put the CPR in the error message', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.setCookie('XSRF-TOKEN', 'XSRF-1');
+    http
+      .enqueue(AUTO_POST_FORM_HOP)
+      .enqueue(LANDING_HOP_WITH_FEDAUTH)
+      .enqueue({ status: 500, body: 'boom' });
+    const client = new TabulexClient({ http: http.asHttpClient(), widgets: fakeWidgets() });
+    let message = '';
+    try {
+      await client.getFravaerIdag(ctx(), '0101209999');
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('status 500');
+    expect(message).not.toContain('0101209999');
   });
 });

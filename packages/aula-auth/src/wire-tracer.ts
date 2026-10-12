@@ -119,6 +119,12 @@ const SECRET_BODY_FIELDS = [
   'identityclaim',
   'chosenoptionjson',
   'cpr',
+  // WS-Federation's equivalent of SAMLResponse — the signed security token
+  // the Tabulex SSO handshake's auto-post ("postResponse.js") hop carries
+  // back as a hidden form field (see tabulex.ts's module docstring). Same
+  // sensitivity class as samlresponse above: whoever holds it holds the
+  // authenticated session, same as the cookie it gets exchanged for.
+  'wresult',
 ];
 
 const SECRET_BODY_FIELDS_SET = new Set(SECRET_BODY_FIELDS.map((s) => s.toLowerCase()));
@@ -140,6 +146,18 @@ const SECRET_URL_PARAMS = new Set([
   '__requestverificationtoken',
   'ticket',
   'session_code',
+  // Found in a live trace 2026-10-02 (Tabulex's SimpleSAMLphp → ADFS SSO
+  // chain): a short-lived SSO correlator carried in the URL, same role as
+  // `state` above (not a credential by itself, but an unpredictable value
+  // that ties a request to its response — the same class this list already
+  // treats as secret).
+  'authstate',
+  // WS-Federation's analog of `state`/`RelayState`: correlates the SSO
+  // request with its callback. Observed live alongside `wa=wsignin1.0` in
+  // the same redirect chain — `wa` itself is a fixed protocol-version
+  // literal with no session-specific content, so it is deliberately NOT
+  // added here (redacting it would add noise, not reduce exposure).
+  'wctx',
 ]);
 
 /**

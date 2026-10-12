@@ -52,7 +52,7 @@
 
 import { Buffer } from 'node:buffer';
 import { timingSafeEqual } from 'node:crypto';
-import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -130,6 +130,13 @@ export interface AuthState {
    * *detected* — see the revocation note in the module docstring.
    */
   password_fingerprint?: string | undefined;
+  /**
+   * Set by every `aula auth revoke`, so a revoke always changes the file's
+   * content — even when there is nothing left to remove. Without it, revoking
+   * while a client is mid-pairing (no tokens yet, only an in-memory auth code)
+   * would rewrite a byte-identical file that no revision check could notice.
+   */
+  revoked_at?: number | undefined;
 }
 
 export function emptyAuthState(): AuthState {
@@ -138,7 +145,8 @@ export function emptyAuthState(): AuthState {
 
 export interface AuthStore {
   load(): Promise<AuthState>;
-  save(state: AuthState): Promise<void>;
+  /** Returns the revision of exactly what was written, when the store has revisions. */
+  save(state: AuthState): Promise<string | undefined>;
   /**
    * Cheap fingerprint of the stored state, for spotting edits made outside
    * this process (`aula auth revoke`). Optional: a store that cannot be
@@ -155,9 +163,10 @@ export class MemoryAuthStore implements AuthStore {
   async load(): Promise<AuthState> {
     return this.state;
   }
-  async save(state: AuthState): Promise<void> {
+  async save(state: AuthState): Promise<string | undefined> {
     this.state = state;
     this.generation += 1;
+    return String(this.generation);
   }
   async revision(): Promise<string> {
     return String(this.generation);
@@ -200,6 +209,7 @@ export class FileAuthStore implements AuthStore {
         tokens: Array.isArray(parsed.tokens) ? parsed.tokens : [],
         password_fingerprint:
           typeof parsed.password_fingerprint === 'string' ? parsed.password_fingerprint : undefined,
+        revoked_at: typeof parsed.revoked_at === 'number' ? parsed.revoked_at : undefined,
       };
     } catch (e) {
       // A corrupt state file must not brick the server: the worst case is that
@@ -209,26 +219,36 @@ export class FileAuthStore implements AuthStore {
     }
   }
 
-  async save(state: AuthState): Promise<void> {
+  async save(state: AuthState): Promise<string | undefined> {
+    const body = JSON.stringify(state, null, 2);
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(state, null, 2), 'utf8');
+    await writeFile(this.filePath, body, 'utf8');
     try {
       await chmod(this.filePath, 0o600);
     } catch {
       // chmod fails on some filesystems (NTFS shares); non-fatal.
     }
+    // Same digest `revision()` computes from the file, so a caller can tell
+    // whether what is on disk afterwards is still what it wrote.
+    return sha256(body).toString('hex');
   }
 
   /**
-   * mtime + size, which is enough to notice `aula auth revoke` rewriting the
-   * file. A deleted file is a distinct revision rather than an error: removing
-   * it by hand is the oldest form of revocation there is, and it should take
-   * effect just as promptly.
+   * A hash of the file's content, not its metadata.
+   *
+   * mtime + size looked sufficient and passed on Windows, then failed on the
+   * Linux deployment host: the kernel stamps file times on a coarse tick, so a
+   * revoke landing within milliseconds of the server's own write — and leaving
+   * the size unchanged — produced an identical revision and went unnoticed. The
+   * file is a few kilobytes, so reading it per request costs next to nothing.
+   *
+   * A deleted file is a distinct revision rather than an error: removing it by
+   * hand is the oldest form of revocation there is, and it should take effect
+   * just as promptly.
    */
   async revision(): Promise<string> {
     try {
-      const info = await stat(this.filePath);
-      return `${info.mtimeMs}:${info.size}`;
+      return sha256(await readFile(this.filePath)).toString('hex');
     } catch (e) {
       if ((e as { code?: string }).code === 'ENOENT') return 'absent';
       throw e;
@@ -263,6 +283,8 @@ export async function revokeAuthState(
   };
   state.tokens = [];
   if (opts.includeClients) state.clients = [];
+  // Strictly increasing, so two revokes in the same millisecond still differ.
+  state.revoked_at = Math.max(Date.now(), (state.revoked_at ?? 0) + 1);
   await store.save(state);
   return summary;
 }
@@ -456,18 +478,38 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
 
   let knownRevision: string | null = store.revision ? await store.revision() : null;
 
+  /**
+   * Write the state, letting an external change win over this process.
+   *
+   * Two windows matter, both found in review. A revoke that lands after our
+   * last read but before this write is adopted by the sync at the top, which
+   * discards whatever this request added in memory — revoke wins. A revoke that
+   * lands after our write is detected because the file no longer holds what we
+   * wrote; adopting that revision as our own would leave a revoked token valid
+   * in memory for good, so the revision is left unknown and the file reloaded.
+   *
+   * What remains is the sub-millisecond gap between that first sync and the
+   * write. Closing it for certain needs a file lock shared with the CLI; for a
+   * manual operator command the residual risk was judged acceptable.
+   */
   const persist = async (): Promise<void> => {
+    await syncFromDisk();
     const cutoff = Math.floor(now() / 1000);
     state.tokens = state.tokens.filter((t) => t.expires_at > cutoff);
-    await store.save(state);
-    if (store.revision) {
-      try {
-        knownRevision = await store.revision();
-      } catch {
-        // Leave the revision unknown; the next sync reloads defensively.
-        knownRevision = null;
-      }
+    const written = await store.save(state);
+    if (!store.revision) return;
+    let onDisk: string | null;
+    try {
+      onDisk = await store.revision();
+    } catch {
+      onDisk = null;
     }
+    if (written !== undefined && onDisk === written) {
+      knownRevision = written;
+      return;
+    }
+    knownRevision = null;
+    await syncFromDisk();
   };
 
   /**
@@ -477,7 +519,7 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
    * `aula auth revoke` would be worse than useless: it would report success,
    * leave every in-memory token still valid, and then be quietly overwritten
    * by the next `persist()`. A security command that lies is worse than one
-   * that does not exist, so the file is re-checked (one `stat`) per request.
+   * that does not exist, so the file is re-checked (one small read) per request.
    *
    * Pending authorization codes are dropped along with the reload. They live
    * for 60 s in memory only, and honouring one minted before a revoke would
@@ -498,6 +540,7 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
     state.clients = fresh.clients;
     state.tokens = fresh.tokens;
     state.password_fingerprint = fresh.password_fingerprint;
+    state.revoked_at = fresh.revoked_at;
     pendingCodes.clear();
     knownRevision = current;
     logger.info('mcp-auth.state.reloaded', {
@@ -797,30 +840,33 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
       return typeof value === 'string' ? value : '';
     };
     const grantType = get('grant_type');
+    // Every rejection is logged with its reason. The client only ever shows a
+    // generic "authorization failed", so without this a broken exchange is
+    // undiagnosable from either side. Reasons carry no secrets.
+    const reject = (error: string, description: string): Response => {
+      logger.warn('mcp-auth.token.rejected', { grant: grantType, error, reason: description });
+      return tokenError(c, error, description);
+    };
 
     if (grantType === 'authorization_code') {
       const code = get('code');
       const pending = pendingCodes.get(code);
       // Single-use: burn the code whether or not the rest validates.
       pendingCodes.delete(code);
-      if (!pending) return tokenError(c, 'invalid_grant', 'unknown or already-used code');
-      if (pending.expires_at < now()) return tokenError(c, 'invalid_grant', 'code expired');
+      if (!pending) return reject('invalid_grant', 'unknown or already-used code');
+      if (pending.expires_at < now()) return reject('invalid_grant', 'code expired');
       if (pending.client_id !== get('client_id')) {
-        return tokenError(c, 'invalid_grant', 'code was issued to a different client');
+        return reject('invalid_grant', 'code was issued to a different client');
       }
       if (pending.redirect_uri !== get('redirect_uri')) {
-        return tokenError(
-          c,
-          'invalid_grant',
-          'redirect_uri does not match the authorization request',
-        );
+        return reject('invalid_grant', 'redirect_uri does not match the authorization request');
       }
       const verifier = get('code_verifier');
       if (
         !verifier ||
         !constantTimeEquals(challengeFromVerifier(verifier), pending.code_challenge)
       ) {
-        return tokenError(c, 'invalid_grant', 'PKCE verification failed');
+        return reject('invalid_grant', 'PKCE verification failed');
       }
       const issued = await issueTokens(pending.client_id, pending.resource);
       logger.info('mcp-auth.token.issued', { client_id: pending.client_id, grant: 'code' });
@@ -830,20 +876,20 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
     if (grantType === 'refresh_token') {
       const hash = hashToken(get('refresh_token'));
       const record = state.tokens.find((t) => t.kind === 'refresh' && t.token_hash === hash);
-      if (!record) return tokenError(c, 'invalid_grant', 'unknown refresh token');
+      if (!record) return reject('invalid_grant', 'unknown refresh token');
       // Rotate: a refresh token is spent the moment it is presented, whether or
       // not it turns out to still be valid.
       state.tokens = state.tokens.filter((t) => t !== record);
       if (record.expires_at <= Math.floor(now() / 1000)) {
         await persist();
-        return tokenError(c, 'invalid_grant', 'refresh token expired');
+        return reject('invalid_grant', 'refresh token expired');
       }
       const issued = await issueTokens(record.client_id, record.resource);
       logger.info('mcp-auth.token.issued', { client_id: record.client_id, grant: 'refresh' });
       return tokenResponse(c, issued);
     }
 
-    return tokenError(c, 'unsupported_grant_type', `unsupported grant_type: ${grantType}`);
+    return reject('unsupported_grant_type', `unsupported grant_type: ${grantType}`);
   });
 
   async function issueTokens(
@@ -883,26 +929,30 @@ export async function createAuthProvider(opts: AuthProviderOptions): Promise<Aut
   // -- middleware -----------------------------------------------------------
 
   const middleware: MiddlewareHandler = async (c, next) => {
-    // Before the open-path shortcut: this is the one hook that runs for every
-    // request, so it is also where a revoke made behind our back gets noticed.
-    await syncFromDisk();
     const path = new URL(c.req.url).pathname;
+    // Open paths are served by `routes`, which syncs on its own; syncing here as
+    // well read and hashed the state file twice for every one of those requests.
     if (OPEN_PATHS.has(path) || path.startsWith('/.well-known/')) return next();
+    await syncFromDisk();
+    const deny = (reason: string): Response => {
+      logger.info('mcp-auth.bearer.rejected', { path, reason });
+      return unauthorized(c, publicUrl, reason);
+    };
 
     const header = c.req.header('authorization') ?? '';
     const presented = /^Bearer\s+(\S+)$/i.exec(header.trim())?.[1];
-    if (!presented) return unauthorized(c, publicUrl, 'missing bearer token');
+    if (!presented) return deny('missing bearer token');
 
     const hash = hashToken(presented);
     const record = state.tokens.find((t) => t.kind === 'access' && t.token_hash === hash);
-    if (!record) return unauthorized(c, publicUrl, 'unknown token');
+    if (!record) return deny('unknown token');
     // `record.resource` (RFC 8707) is carried through from the authorization
     // request but deliberately not enforced: this server exposes exactly one
     // protected resource, so an audience check has nothing to distinguish. It
     // is persisted so that a future second resource can start enforcing it
     // without invalidating tokens issued before that change.
     if (record.expires_at <= Math.floor(now() / 1000)) {
-      return unauthorized(c, publicUrl, 'token expired');
+      return deny('token expired');
     }
     return next();
   };

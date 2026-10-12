@@ -41,6 +41,16 @@ export class FakeHttp {
     // simplification above). Good enough to test flows like TabulexClient's
     // SSO handshake, where a test just needs "the FedAuth cookie now exists
     // after this response".
+    removeCookies: async (_url: string, names: readonly string[]): Promise<number> => {
+      // Mirrors the real jar's contract (see AulaCookieJar.removeCookies):
+      // returns how many of `names` were actually present. Same "any URL"
+      // simplification as getCookieValue above.
+      let removed = 0;
+      for (const n of names) {
+        if (this.cookieValues.delete(`*#${n}`)) removed += 1;
+      }
+      return removed;
+    },
     storeFromResponse: async (headers: Headers, _url: string): Promise<void> => {
       for (const sc of headers.getSetCookie()) {
         const nameValue = sc.split(';', 1)[0] ?? '';

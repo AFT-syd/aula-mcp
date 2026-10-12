@@ -19,6 +19,7 @@ import {
   type StoredTokenRecord,
   silentLogger,
   type TokenStore,
+  type WireTracer,
   withFreshTokens,
 } from '@aula-mcp/aula-auth';
 import {
@@ -28,6 +29,7 @@ import {
   EasyIqSkoleportalClient,
   MeebookClient,
   MinUddannelseClient,
+  type ProfilesByLoginData,
   SystematicClient,
   TabulexClient,
   WidgetTokenManager,
@@ -36,12 +38,30 @@ import {
 export interface AulaContextOptions {
   store?: TokenStore;
   logger?: Logger;
+  /** Wire tracer for every HTTP exchange this context's integrations make.
+   *  Defaults to AulaHttpClient's own noop. Wired from AULA_MCP_TRACE_FILE
+   *  in server.ts — see trace-config.ts. */
+  tracer?: WireTracer;
 }
+
+/** How long a cached profiles.getProfilesByLogin() response is served
+ *  before the next caller triggers a fresh fetch. Short enough that a
+ *  session doesn't drift far from Aula's own state, long enough to collapse
+ *  the burst of calls one aula.discover plus a couple of tool calls makes —
+ *  measured live 2026-10-02: 4 calls to getProfilesByLogin, all redundant,
+ *  within a single discover. `aula.discover` itself bypasses this cache via
+ *  `forceRefresh` (see getProfilesByLogin below), so calling it again after
+ *  a "children or widgets unknown" error always gets current data — this
+ *  cache only collapses the *other* tools' incidental lookups. */
+const PROFILES_CACHE_TTL_MS = 60_000;
 
 export class AulaContext {
   private readonly store: TokenStore;
   private readonly logger: Logger;
-  private readonly http: AulaHttpClient;
+  // Public (not `private`) so callers — notably tests — can confirm which
+  // WireTracer is wired in without a dedicated accessor. Every integration
+  // plugin (getEasyIq(), getTabulex(), ...) shares this exact instance.
+  readonly http: AulaHttpClient;
   // Fields below are declared as `T | undefined` (not just `T?`) so we can
   // explicitly assign `undefined` to invalidate the cache (the strict
   // `exactOptionalPropertyTypes` flag forbids `field = undefined` on `T?`).
@@ -52,15 +72,35 @@ export class AulaContext {
    *  sessionId/sessionUUID/sessionuuid parameter by the third-party
    *  integrations. Stored as string — Aula returns either a numeric id
    *  or an opaque alphanumeric token; we treat it as opaque to match
-   *  upstream Python's `str(child["userId"])` handling. */
-  private cachedGuardianUserId: string | undefined;
+   *  upstream Python's `str(child["userId"])` handling.
+   *
+   *  Bound to the client it was fetched with: getProfileContext also
+   *  activates the guardian profile server-side, which messaging needs, and
+   *  that activation belongs to the access token. See getGuardianUserId. */
+  private cachedGuardian: { client: AulaClient; userId: string } | undefined;
+  /** profiles.getProfilesByLogin(), cached for PROFILES_CACHE_TTL_MS — see
+   *  that constant's comment. */
+  private profilesPromise: Promise<ProfilesByLoginData> | undefined;
+  private profilesFetchedAt = 0;
+  /**
+   * Set by invalidate(), consumed by getTabulex(). The Tabulex session lives
+   * as a FedAuth cookie in the SHARED cookie jar, which invalidate() cannot
+   * clear synchronously (removal is async) and must not clear eagerly on a
+   * path that may run while a request is in flight. Deferring it to the next
+   * getTabulex() puts the clearing exactly where the new token's first
+   * Tabulex call would otherwise have adopted the previous login's session.
+   */
+  private tabulexSessionStale = false;
   private tokenFileWatcher: FSWatcher | undefined;
   private tokenFileChangeDebounce: NodeJS.Timeout | undefined;
 
   constructor(options: AulaContextOptions = {}) {
     this.store = options.store ?? defaultStore();
     this.logger = options.logger ?? silentLogger;
-    this.http = new AulaHttpClient({ logger: this.logger });
+    this.http = new AulaHttpClient({
+      logger: this.logger,
+      ...(options.tracer ? { tracer: options.tracer } : {}),
+    });
     this.watchTokenFile();
   }
 
@@ -151,12 +191,54 @@ export class AulaContext {
   }
 
   /** Drop all cached state. Useful for tests; also called when an upstream
-   *  401/403 indicates the server's view of our tokens is wrong. */
+   *  401/403 indicates the server's view of our tokens is wrong. Also drops
+   *  the profiles cache — a token switch (e.g. `aula login` as a different
+   *  user) must never serve the previous login's cached child list. */
   invalidate(): void {
     this.clientPromise = undefined;
     this.widgetManagerPromise = undefined;
     this.cachedRecord = undefined;
-    this.cachedGuardianUserId = undefined;
+    this.cachedGuardian = undefined;
+    this.profilesPromise = undefined;
+    this.profilesFetchedAt = 0;
+    // The Tabulex session is a cookie in the shared jar, not a field here —
+    // see tabulexSessionStale. Dropping the profiles cache without also
+    // dropping that session would leave the exact hole this guards: the
+    // next guardian's first Fravær call reusing the previous one's session.
+    this.tabulexSessionStale = true;
+  }
+
+  /**
+   * `profiles.getProfilesByLogin` — every child + institution for the
+   * logged-in guardian. Cached for PROFILES_CACHE_TTL_MS; pass
+   * `forceRefresh: true` to bypass the cache (aula.discover always does —
+   * it is the tool the agent is told to re-call when "children or widgets
+   * unknown", and that instruction must keep meaning "fetch current data",
+   * not "read a minute-old cache"). `invalidate()` also drops it, so a
+   * rotated token can never serve a previous login's children.
+   */
+  async getProfilesByLogin(opts: { forceRefresh?: boolean } = {}): Promise<ProfilesByLoginData> {
+    const now = Date.now();
+    const stale = now - this.profilesFetchedAt > PROFILES_CACHE_TTL_MS;
+    if (opts.forceRefresh || !this.profilesPromise || stale) {
+      // No `await` before this assignment — same concurrency-safety reason
+      // as getClient() above. Awaiting this.getClient() first would leave a
+      // window where two callers racing in the same tick both see
+      // `!this.profilesPromise` and both trigger their own fetch; chaining
+      // with .then() instead assigns the promise synchronously, so the
+      // second concurrent caller sees it already set and shares it.
+      this.profilesFetchedAt = now;
+      this.profilesPromise = this.getClient()
+        .then((client) => client.getProfilesByLogin())
+        .catch((err: unknown) => {
+          // Same pattern as getClient(): don't let a failed fetch poison the
+          // cache for the next caller.
+          this.profilesPromise = undefined;
+          this.profilesFetchedAt = 0;
+          throw err;
+        });
+    }
+    return this.profilesPromise;
   }
 
   /**
@@ -167,16 +249,25 @@ export class AulaContext {
    * Per Python `client.py:670/757` — the integration calls fail without it.
    * Aula returns this as either a number or an opaque alphanumeric token;
    * we coerce to string and pass through verbatim.
+   *
+   * Cached per client, not once per context. The call is also what primes
+   * the guardian profile for messaging (see the tools' comments on 403s),
+   * and getClient() builds a NEW client when the access token expires. A
+   * cache that outlived the client skipped the priming for the new token:
+   * observed live 2026-10-11, the first messaging call after a refresh got
+   * HTTP 403 and the next one worked — because the refresh rewrote
+   * tokens.json and the file watcher's invalidate() cleared the cache.
    */
   async getGuardianUserId(): Promise<string> {
-    if (this.cachedGuardianUserId !== undefined) return this.cachedGuardianUserId;
     const client = await this.getClient();
+    if (this.cachedGuardian?.client === client) return this.cachedGuardian.userId;
     const ctx = await client.getProfileContext('guardian');
     if (ctx.userId == null || ctx.userId === '') {
       throw new Error('profiles.getProfileContext returned no userId');
     }
-    this.cachedGuardianUserId = String(ctx.userId);
-    return this.cachedGuardianUserId;
+    const userId = String(ctx.userId);
+    this.cachedGuardian = { client, userId };
+    return userId;
   }
 
   async getWidgetManager(): Promise<WidgetTokenManager> {
@@ -217,8 +308,29 @@ export class AulaContext {
     return new SystematicClient({ http: this.http, widgets: await this.getWidgetManager() });
   }
 
+  /**
+   * Deliberately NOT memoized, unlike getWidgetManager() above. A fresh
+   * TabulexClient per call used to mean a fresh WS-Federation SSO handshake
+   * per call too (sessionEstablished starts false on every instance) — see
+   * the 2026-10-02 live test, 27 HTTP calls for 4 tool calls in one MCP
+   * session. The actual fix is in TabulexClient.ensureSession(), which now
+   * checks the shared cookie jar (this.http's, same instance across every
+   * client built here) for a live FedAuth cookie before redoing the
+   * handshake. That's more robust than memoizing the client here: it also
+   * covers a client built some other way, and it sidesteps having to
+   * invalidate a cached TabulexClient on the same triggers getClient()
+   * already tracks (token rotation, expiry) — the cookie jar is simply
+   * asked fresh each time instead of mirrored into a second cache.
+   */
   async getTabulex(): Promise<TabulexClient> {
-    return new TabulexClient({ http: this.http, widgets: await this.getWidgetManager() });
+    const widgets = await this.getWidgetManager();
+    if (this.tabulexSessionStale) {
+      // Clear before the client is handed out, not after: the very next call
+      // on it would otherwise adopt the stale FedAuth cookie from the jar.
+      this.tabulexSessionStale = false;
+      await TabulexClient.clearSession(this.http);
+    }
+    return new TabulexClient({ http: this.http, widgets });
   }
 
   /** The currently-loaded record (after first getClient()). */

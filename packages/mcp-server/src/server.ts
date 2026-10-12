@@ -24,6 +24,14 @@
  *   AULA_MCP_WRITE=1          — enable write tools (aula.presence.set_template);
  *                               the server is read-only without it
  *   AULA_MCP_LOG=1            — verbose console logs from auth/client layers
+ *   AULA_MCP_TRACE_FILE       — path to a JSONL wire-trace file. When set, every
+ *                               HTTP exchange any integration makes (Aula, Tabulex,
+ *                               EasyIQ, ...) is appended as one sanitised line
+ *                               (method, URL, headers, bodies, status, duration —
+ *                               same redaction as the CLI's `aula login --debug`).
+ *                               Off by default. The file is created 0600; an
+ *                               unwritable path fails startup instead of silently
+ *                               dropping traces. See trace-config.ts.
  *   AULA_MCP_ALLOW_REMOTE=1   — allow binding to non-loopback addresses (refuses
  *                               by default; the server is single-user and any
  *                               peer with /mcp access can drive your tokens).
@@ -41,23 +49,26 @@
  *                                GET /sse requests get 503'd (default 16)
  *   AULA_MCP_SSE_IDLE_MS       — evict /sse sessions idle for >this many ms
  *                                (default 300_000 = 5 min)
- *   AULA_MCP_HTTP_MAX_SESSIONS — max concurrent /mcp sessions before new
- *                                initialize requests get 503'd (default 16)
- *   AULA_MCP_HTTP_IDLE_MS      — evict /mcp sessions idle for >this many ms
- *                                (default 300_000 = 5 min)
+ *   AULA_MCP_HTTP_MAX_SESSIONS — max concurrent /mcp sessions; when full, the
+ *                                least recently active idle one is evicted
+ *                                (default 16)
+ *   AULA_MCP_HTTP_IDLE_MS      — close /mcp sessions idle for longer than this
+ *                                (default 1_800_000 = 30 min)
  *   AULA_MCP_INGRESS_PORT     — if set, also boots the in-addon setup/login UI
  *                               on this port (bound to 0.0.0.0 for HA Ingress).
  *                               Default unset; the HA addon sets it to 8099.
  */
 
 import { consoleLogger, silentLogger } from '@aula-mcp/aula-auth';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { AulaContext } from './aula-context.ts';
 import { assertRemoteAuthConfigured, createAuthProvider, resolveAuthConfig } from './mcp-auth.ts';
+import { createMcpSessionRouter } from './mcp-sessions.ts';
 import { createMcpApp, type McpApp } from './setup.ts';
 import { createSetupApp } from './setup-ui.ts';
 import { HonoSseTransport } from './sse-transport.ts';
+import { createHttpTracer, resolveTraceFilePath } from './trace-config.ts';
 
 const PORT = Number(process.env.AULA_MCP_PORT ?? 7878);
 const HOST = process.env.AULA_MCP_HOST ?? '127.0.0.1';
@@ -67,85 +78,47 @@ const logger = process.env.AULA_MCP_LOG === '1' ? consoleLogger('aula-mcp') : si
 
 assertSafeBindAddress(HOST);
 
+// AULA_MCP_TRACE_FILE: opt-in wire trace for every HTTP exchange this server's
+// integrations make. Validated eagerly (file created/touched, 0600) so a bad
+// path refuses to start rather than silently dropping every trace entry —
+// same "fail loud at boot" pattern as assertSafeBindAddress above.
+const TRACE_FILE_PATH = resolveTraceFilePath();
+let httpTracer: ReturnType<typeof createHttpTracer>;
+try {
+  httpTracer = createHttpTracer(TRACE_FILE_PATH);
+} catch (err) {
+  process.stderr.write(
+    `AULA_MCP_TRACE_FILE="${TRACE_FILE_PATH}" is not usable: ${(err as Error).message}\n`,
+  );
+  process.exit(2);
+}
+if (httpTracer) {
+  logger.info('aula-mcp.trace_file.enabled', { path: TRACE_FILE_PATH });
+}
+
 // Binding off-box is only safe if *something* authenticates callers. This
 // refuses to start when remote access is requested without either the built-in
 // authorization server or an explicit "my proxy handles it" opt-out.
 const authConfig = resolveAuthConfig();
 assertRemoteAuthConfigured({ allowRemote: ALLOW_REMOTE, auth: authConfig, logger });
 
-// Streamable HTTP transport.
-//
-// One transport instance represents one MCP session. A client starts a new
-// session by POSTing an `initialize` request without an Mcp-Session-Id header.
-// The transport then generates a session ID and returns it to the client.
-//
-// Subsequent requests from that client include Mcp-Session-Id, which we use to
-// route the request back to the transport that owns that session.
-//
-// Previously aula-mcp created one global transport and reused it for every
-// client. That meant the first client could initialize successfully, but a
-// later client/reconnect would hit the same initialized transport and receive:
-//
-//   Invalid Request: Server already initialized
-//
-// Keep each session's McpApp as well as its transport because McpServer.connect()
-// binds a server instance to a single transport.
+// One AulaContext for every /mcp session, so there is a single token refresh
+// path no matter how many clients are connected.
+const sharedContext = new AulaContext({ logger, ...(httpTracer ? { tracer: httpTracer } : {}) });
 
-//
-// The session map is capped + idle-evicted, for the same reason the legacy
-// /sse map is: a client that goes away without sending DELETE /mcp (crash,
-// dropped network, a browser tab closed mid-session) leaves its McpApp and
-// transport behind forever. onsessionclosed only fires on an orderly close.
-interface StreamableHttpSession {
-  transport: WebStandardStreamableHTTPServerTransport;
-  app: McpApp;
-  lastActivityAt: number;
-}
-
-const HTTP_MAX_SESSIONS = Math.max(1, Number(process.env.AULA_MCP_HTTP_MAX_SESSIONS ?? 16));
-const HTTP_IDLE_MS = Math.max(1_000, Number(process.env.AULA_MCP_HTTP_IDLE_MS ?? 300_000));
-const HTTP_SWEEP_INTERVAL_MS = Math.max(1_000, Math.floor(HTTP_IDLE_MS / 4));
-const streamableHttpSessions = new Map<string, StreamableHttpSession>();
-
-async function closeHttpSession(sessionId: string, reason: string): Promise<void> {
-  const session = streamableHttpSessions.get(sessionId);
-  if (!session) return;
-  streamableHttpSessions.delete(sessionId);
-  try {
-    await session.transport.close();
-  } catch (err) {
-    logger.error('aula-mcp.http.transport_close_error', {
-      sessionId,
-      reason,
-      error: (err as Error).message,
-    });
-  }
-  try {
-    await session.app.mcp.close();
-  } catch (err) {
-    logger.error('aula-mcp.http.mcp_close_error', {
-      sessionId,
-      reason,
-      error: (err as Error).message,
-    });
-  }
-}
-
-// Single sweeper, started once at boot. `unref()` so the interval doesn't keep
-// the process alive on its own — shutdown clears it explicitly anyway.
-const httpSweeper: ReturnType<typeof setInterval> = setInterval(() => {
-  const now = Date.now();
-  for (const [sessionId, session] of streamableHttpSessions) {
-    if (now - session.lastActivityAt > HTTP_IDLE_MS) {
-      logger.info('aula-mcp.http.session_evicted_idle', {
-        sessionId,
-        idleMs: now - session.lastActivityAt,
-      });
-      void closeHttpSession(sessionId, 'idle');
-    }
-  }
-}, HTTP_SWEEP_INTERVAL_MS);
-httpSweeper.unref?.();
+// Streamable HTTP: one transport per client session. A single stateful
+// transport accepts exactly one `initialize` in its lifetime, which let the
+// first client own the server until restart — see mcp-sessions.ts.
+const mcpSessions = createMcpSessionRouter({
+  createServer: () => createMcpApp({ logger, context: sharedContext }).mcp,
+  maxSessions: Number(process.env.AULA_MCP_HTTP_MAX_SESSIONS ?? 16),
+  idleMs: Number(process.env.AULA_MCP_HTTP_IDLE_MS ?? 30 * 60 * 1_000),
+  logger,
+});
+const mcpSessionSweeper: ReturnType<typeof setInterval> = setInterval(() => {
+  void mcpSessions.sweepIdle();
+}, 60_000);
+mcpSessionSweeper.unref?.();
 
 const app = new Hono();
 
@@ -161,127 +134,7 @@ if (authConfig.config) {
 
 app.get('/healthz', (c) => c.json({ ok: true, name: 'aula-mcp' }));
 
-async function handleMcp(request: Request): Promise<Response> {
-  const sessionId = request.headers.get('mcp-session-id');
-
-  // Existing MCP session: route back to the transport that owns it.
-  if (sessionId) {
-    const session = streamableHttpSessions.get(sessionId);
-
-    if (!session) {
-      return Response.json(
-        {
-          jsonrpc: '2.0',
-          error: {
-            code: -32001,
-            message: 'Session not found',
-          },
-          id: null,
-        },
-        { status: 404 },
-      );
-    }
-
-    session.lastActivityAt = Date.now();
-    return session.transport.handleRequest(request);
-  }
-
-  // A request without a session ID can only start a new session.
-  //
-  // We create a fresh McpApp + transport here. The transport itself validates
-  // that the request is a valid MCP initialization request.
-  if (streamableHttpSessions.size >= HTTP_MAX_SESSIONS) {
-    logger.warn('aula-mcp.http.session_rejected_cap', {
-      active: streamableHttpSessions.size,
-      cap: HTTP_MAX_SESSIONS,
-    });
-    return Response.json(
-      {
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: `Too many active MCP sessions (cap ${HTTP_MAX_SESSIONS}). Retry shortly.`,
-        },
-        id: null,
-      },
-      { status: 503 },
-    );
-  }
-
-  let createdSessionId: string | undefined;
-
-  const sessionApp = createMcpApp({ logger });
-
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    enableJsonResponse: true,
-    sessionIdGenerator: () => crypto.randomUUID(),
-
-    onsessioninitialized: (newSessionId) => {
-      createdSessionId = newSessionId;
-
-      streamableHttpSessions.set(newSessionId, {
-        transport,
-        app: sessionApp,
-        lastActivityAt: Date.now(),
-      });
-
-      logger.info('aula-mcp.http.session_initialized', {
-        sessionId: newSessionId,
-      });
-    },
-
-    onsessionclosed: (closedSessionId) => {
-      streamableHttpSessions.delete(closedSessionId);
-
-      logger.info('aula-mcp.http.session_closed', {
-        sessionId: closedSessionId,
-      });
-    },
-  });
-
-  await sessionApp.mcp.connect(transport);
-
-  try {
-    const response = await transport.handleRequest(request);
-
-    // If initialization failed before a session ID was created, this transport
-    // is not stored anywhere and should be cleaned up immediately.
-    if (!createdSessionId) {
-      try {
-        await transport.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
-
-      try {
-        await sessionApp.mcp.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
-    }
-
-    return response;
-  } catch (err) {
-    // Initialization failed: make sure the temporary server/transport does not
-    // leak resources.
-    if (!createdSessionId) {
-      try {
-        await transport.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
-
-      try {
-        await sessionApp.mcp.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
-    }
-
-    throw err;
-  }
-}
-
+const handleMcp = (request: Request): Promise<Response> => mcpSessions.handle(request);
 app.post('/mcp', (c) => handleMcp(c.req.raw));
 app.get('/mcp', (c) => handleMcp(c.req.raw));
 app.delete('/mcp', (c) => handleMcp(c.req.raw));
@@ -375,7 +228,13 @@ app.get('/sse', (c) => {
     // McpServer.connect() binds a single transport, so we instantiate a
     // fresh server per SSE connection. AulaContext is cheap to construct
     // — it just lazily wraps the shared token store on first call.
-    const sessionApp = createMcpApp({ logger });
+    const sessionApp = createMcpApp({
+      logger,
+      // Legacy SSE sessions build their own AulaContext (see setup.ts) — pass
+      // the same tracer the Streamable HTTP path uses, so AULA_MCP_TRACE_FILE
+      // covers both transports rather than only the one most clients use.
+      ...(httpTracer ? { context: new AulaContext({ logger, tracer: httpTracer }) } : {}),
+    });
     sseSessions.set(sessionId, {
       transport: sseTransport,
       app: sessionApp,
@@ -482,11 +341,11 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // session cleanup; this also lets the event loop drain if anything still
   // refs an interval.
   clearInterval(sseSweeper);
-  clearInterval(httpSweeper);
+  clearInterval(mcpSessionSweeper);
   try {
     await Promise.all([
       ...Array.from(sseSessions.keys()).map((sid) => closeSseSession(sid, 'shutdown')),
-      ...Array.from(streamableHttpSessions.keys()).map((sid) => closeHttpSession(sid, 'shutdown')),
+      mcpSessions.closeAll(),
     ]);
     await server.stop();
     if (setupServer) await setupServer.stop();

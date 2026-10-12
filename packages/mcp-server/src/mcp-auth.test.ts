@@ -6,13 +6,14 @@
  * no tokens on disk — the auth store is in-memory.
  */
 
-import { beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { challengeFromVerifier, generatePkce } from '@aula-mcp/aula-auth';
 import { Hono } from 'hono';
 import {
+  type AuthState,
   type AuthStore,
   assertRemoteAuthConfigured,
   createAuthProvider,
@@ -743,11 +744,39 @@ describe('secure-by-default gate', () => {
   });
 });
 
+/**
+ * A temp `mcp-auth.json` that is deleted when the suite finishes.
+ *
+ * The cleanup is not cosmetic: these directories were never removed, so a
+ * server that had run the suite a few times accumulated hundreds of
+ * `/tmp/aula-mcp-*` directories — 302 were found on one deployment host —
+ * each holding a file named exactly like the production auth state. The
+ * contents are fixtures, but the noise made real leftovers impossible to
+ * spot in a world-readable /tmp.
+ */
+function tempAuthFiles(prefix: string): {
+  tempFile: () => Promise<string>;
+  cleanup: () => Promise<void>;
+} {
+  const dirs: string[] = [];
+  return {
+    async tempFile() {
+      const dir = await mkdtemp(join(tmpdir(), prefix));
+      dirs.push(dir);
+      return join(dir, 'mcp-auth.json');
+    },
+    async cleanup() {
+      // `force` so a test that already removed its own directory doesn't
+      // turn cleanup into a second failure.
+      await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true })));
+      dirs.length = 0;
+    },
+  };
+}
+
 describe('FileAuthStore — the store production actually uses', () => {
-  async function tempFile(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), 'aula-mcp-auth-'));
-    return join(dir, 'mcp-auth.json');
-  }
+  const { tempFile, cleanup } = tempAuthFiles('aula-mcp-auth-');
+  afterAll(cleanup);
 
   test('a missing file loads as empty state rather than throwing', async () => {
     const store = new FileAuthStore(await tempFile());
@@ -806,10 +835,8 @@ describe('FileAuthStore — the store production actually uses', () => {
 });
 
 describe('revocation', () => {
-  async function tempFile(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), 'aula-mcp-revoke-'));
-    return join(dir, 'mcp-auth.json');
-  }
+  const { tempFile, cleanup } = tempAuthFiles('aula-mcp-revoke-');
+  afterAll(cleanup);
 
   test('revoking drops issued tokens but keeps client registrations', async () => {
     const store = new MemoryAuthStore();
@@ -894,6 +921,87 @@ describe('revocation', () => {
       }).toString(),
     });
     expect(tokenRes.status).toBe(400);
+  });
+
+  // Linux stamps file times on a coarse kernel tick, so a revoke landing within
+  // milliseconds of the server's own write can leave mtime AND size unchanged.
+  // That is exactly how this suite first failed on the deployment host while
+  // passing on Windows. The revision has to follow content, not metadata.
+  test('a rewrite with identical size is still a new revision', async () => {
+    const path = await tempFile();
+    const store = new FileAuthStore(path);
+    const a = emptyAuthState();
+    a.tokens.push({ token_hash: 'a'.repeat(64), client_id: 'c', kind: 'access', expires_at: 99 });
+    await store.save(a);
+    const first = await store.revision();
+
+    const b = emptyAuthState();
+    b.tokens.push({ token_hash: 'b'.repeat(64), client_id: 'c', kind: 'access', expires_at: 99 });
+    await store.save(b);
+
+    expect(await store.revision()).not.toBe(first);
+  });
+
+  test('a revoke with nothing to revoke still changes the file, every time', async () => {
+    const path = await tempFile();
+    await new FileAuthStore(path).save(emptyAuthState());
+    const before = await readFile(path, 'utf8');
+
+    await revokeAuthState(new FileAuthStore(path));
+    const once = await readFile(path, 'utf8');
+    await revokeAuthState(new FileAuthStore(path));
+    const twice = await readFile(path, 'utf8');
+
+    expect(once).not.toBe(before);
+    expect(twice).not.toBe(once);
+  });
+
+  // Review finding, verified with a deterministic PoC: a revoke landing between
+  // persist()'s write and its revision read was adopted as the server's own
+  // revision, so the token issued in that same request stayed valid in memory
+  // indefinitely. The store below injects exactly that interleaving.
+  test('a revoke landing right after the server writes still wins', async () => {
+    const path = await tempFile();
+    class RacyStore implements AuthStore {
+      armed = false;
+      private readonly inner = new FileAuthStore(path);
+      load(): Promise<AuthState> {
+        return this.inner.load();
+      }
+      async save(state: AuthState): Promise<string | undefined> {
+        const written = await this.inner.save(state);
+        if (this.armed) {
+          this.armed = false;
+          await revokeAuthState(new FileAuthStore(path));
+        }
+        return written;
+      }
+      revision(): Promise<string> {
+        return this.inner.revision();
+      }
+    }
+    const store = new RacyStore();
+    const { app } = await harness({ store });
+    const clientId = await registerClient(app);
+    const pkce = generatePkce();
+    const auth = await submitPassword(app, clientId, pkce.challenge, PASSWORD);
+    const code = new URL(auth.headers.get('location') ?? '').searchParams.get('code') ?? '';
+
+    store.armed = true; // the external revoke fires inside the token issuance
+    const tokenRes = await app.request('/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: clientId,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: pkce.verifier,
+      }).toString(),
+    });
+    const { access_token } = (await tokenRes.json()) as { access_token: string };
+
+    expect((await callMcp(app, access_token)).status).toBe(401);
   });
 
   // Changing the password has to mean something. Tokens issued under the old

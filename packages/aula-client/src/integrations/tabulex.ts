@@ -62,7 +62,7 @@
  */
 
 import type { AulaHttpClient } from '@aula-mcp/aula-auth';
-import { extractFormAction, extractHiddenInputs } from '@aula-mcp/aula-auth';
+import { extractFormAction, extractHiddenInputs, sanitizeUrl } from '@aula-mcp/aula-auth';
 import { TabulexSessionError } from '../errors.ts';
 import type { WidgetTokenManager } from '../widget-token-manager.ts';
 import type { IntegrationContext } from './types.ts';
@@ -154,6 +154,26 @@ export interface TabulexOversigtEntry {
   erFravaer?: boolean;
 }
 
+/**
+ * The cookies that carry the Tabulex session. WS-Federation chunks a token
+ * too large for one cookie across `FedAuth`, `FedAuth1`, `FedAuth2` … (see
+ * the module docstring), so clearing only the first would leave a partial
+ * session behind that still looks present to `hasFedAuthCookie`.
+ */
+const FEDAUTH_COOKIES = ['FedAuth', 'FedAuth1', 'FedAuth2', 'FedAuth3'] as const;
+
+/**
+ * Does this error look like a session Tabulex no longer honours?
+ *
+ * Both shapes have been seen from this API family: a non-200 (which
+ * getJson/putJson turn into TabulexSessionError), and a 200 carrying an HTML
+ * sign-in page, which those same helpers hand straight to `JSON.parse` — so
+ * a SyntaxError here means "we asked for JSON and got a login page".
+ */
+function looksLikeDeadSession(e: unknown): boolean {
+  return e instanceof TabulexSessionError || e instanceof SyntaxError;
+}
+
 export interface TabulexOptions {
   http: AulaHttpClient;
   widgets: WidgetTokenManager;
@@ -179,41 +199,45 @@ export class TabulexClient {
    *  child's CPR is obtained — resolve it here every session, never cache
    *  it across sessions or hardcode it. */
   async getPersonsAdgangTilBoern(ctx: IntegrationContext): Promise<TabulexChildAccess[]> {
-    await this.ensureSession(ctx);
-    const body = await this.getJson<Record<string, unknown>[]>(
-      `${TABULEX_BASE}/api/PersonsAdgangTilBoern`,
-    );
-    return body.map((raw) => normaliseChildAccess(raw));
+    return this.callWithSession(ctx, async () => {
+      const body = await this.getJson<Record<string, unknown>[]>(
+        `${TABULEX_BASE}/api/PersonsAdgangTilBoern`,
+      );
+      return body.map((raw) => normaliseChildAccess(raw));
+    });
   }
 
   /** Today's absence status for one child. */
   async getFravaerIdag(ctx: IntegrationContext, cpr: string): Promise<TabulexFravaerDag> {
-    await this.ensureSession(ctx);
-    const raw = await this.getJson<Record<string, unknown>>(
-      `${TABULEX_BASE}/api/Fravaer/Idag/${encodeURIComponent(cpr)}`,
-    );
-    return normaliseFravaerDag(raw);
+    return this.callWithSession(ctx, async () => {
+      const raw = await this.getJson<Record<string, unknown>>(
+        `${TABULEX_BASE}/api/Fravaer/Idag/${encodeURIComponent(cpr)}`,
+      );
+      return normaliseFravaerDag(raw);
+    });
   }
 
   /** Tomorrow's absence status for one child. */
   async getFravaerImorgen(ctx: IntegrationContext, cpr: string): Promise<TabulexFravaerDag> {
-    await this.ensureSession(ctx);
-    const raw = await this.getJson<Record<string, unknown>>(
-      `${TABULEX_BASE}/api/Fravaer/Imorgen/${encodeURIComponent(cpr)}`,
-    );
-    return normaliseFravaerDag(raw);
+    return this.callWithSession(ctx, async () => {
+      const raw = await this.getJson<Record<string, unknown>>(
+        `${TABULEX_BASE}/api/Fravaer/Imorgen/${encodeURIComponent(cpr)}`,
+      );
+      return normaliseFravaerDag(raw);
+    });
   }
 
   /** Absence over the coming school days. */
   async getFravaerSkoledage(ctx: IntegrationContext, cpr: string): Promise<TabulexSkoledag[]> {
-    await this.ensureSession(ctx);
-    const raw = await this.getJson<Record<string, unknown>[]>(
-      `${TABULEX_BASE}/api/Fravaer/skoledage/${encodeURIComponent(cpr)}`,
-    );
-    return raw.map((d) => ({
-      ...(typeof d.Dato === 'string' ? { dato: d.Dato } : {}),
-      ...(typeof d.SkoleDag === 'boolean' ? { skoleDag: d.SkoleDag } : {}),
-    }));
+    return this.callWithSession(ctx, async () => {
+      const raw = await this.getJson<Record<string, unknown>[]>(
+        `${TABULEX_BASE}/api/Fravaer/skoledage/${encodeURIComponent(cpr)}`,
+      );
+      return raw.map((d) => ({
+        ...(typeof d.Dato === 'string' ? { dato: d.Dato } : {}),
+        ...(typeof d.SkoleDag === 'boolean' ? { skoleDag: d.SkoleDag } : {}),
+      }));
+    });
   }
 
   /** Quarterly absence statistics + history. `kvartal` is 1-4. */
@@ -223,17 +247,18 @@ export class TabulexClient {
     aar: number,
     kvartal: number,
   ): Promise<TabulexOversigtEntry[]> {
-    await this.ensureSession(ctx);
-    const params = new URLSearchParams({ aar: String(aar), kvartal: String(kvartal) });
-    const raw = await this.getJson<Record<string, unknown>[]>(
-      `${TABULEX_BASE}/api/Fravaer/Oversigt/${encodeURIComponent(cpr)}?${params.toString()}`,
-    );
-    return raw.map((e) => ({
-      ...(typeof e.Aarsag === 'string' ? { aarsag: e.Aarsag } : {}),
-      ...(typeof e.Dage === 'string' ? { dage: e.Dage } : {}),
-      ...(typeof e.Procent === 'string' ? { procent: e.Procent } : {}),
-      ...(typeof e.ErFravaer === 'boolean' ? { erFravaer: e.ErFravaer } : {}),
-    }));
+    return this.callWithSession(ctx, async () => {
+      const params = new URLSearchParams({ aar: String(aar), kvartal: String(kvartal) });
+      const raw = await this.getJson<Record<string, unknown>[]>(
+        `${TABULEX_BASE}/api/Fravaer/Oversigt/${encodeURIComponent(cpr)}?${params.toString()}`,
+      );
+      return raw.map((e) => ({
+        ...(typeof e.Aarsag === 'string' ? { aarsag: e.Aarsag } : {}),
+        ...(typeof e.Dage === 'string' ? { dage: e.Dage } : {}),
+        ...(typeof e.Procent === 'string' ? { procent: e.Procent } : {}),
+        ...(typeof e.ErFravaer === 'boolean' ? { erFravaer: e.ErFravaer } : {}),
+      }));
+    });
   }
 
   /**
@@ -248,16 +273,82 @@ export class TabulexClient {
     cpr: string,
     when: 'today' | 'tomorrow',
   ): Promise<unknown> {
-    await this.ensureSession(ctx);
     const path = when === 'today' ? 'MeldSygIdag' : 'MeldSygImorgen';
+    // No retry-on-dead-session for this one. callWithSession would re-send a
+    // write that Tabulex cannot undo, and a failed write that actually
+    // landed is indistinguishable from one that did not. The caller reads
+    // the state back instead (see aula.fravaer.tabulex_meld_syg).
+    await this.ensureSession(ctx);
     return this.putJson(`${TABULEX_BASE}/api/Fravaer/${path}/`, { Cpr: cpr });
   }
 
   // -- session handshake ----------------------------------------------------
 
-  private async ensureSession(ctx: IntegrationContext): Promise<void> {
-    if (this.sessionEstablished) return;
+  /**
+   * Run `call` with a live Tabulex session, re-establishing it once if the
+   * session we adopted turns out to be dead.
+   *
+   * The retry is the half that the jar-check alone was missing. Checking the
+   * jar stops the needless handshakes (measured live 2026-10-02: 27 HTTP
+   * calls for 4 tool calls), but a FedAuth cookie carries no client-visible
+   * expiry, so the jar keeps handing out a cookie that Tabulex may already
+   * have forgotten. Before this retry, `ensureSession`'s early return meant
+   * the handshake would then never run again for the lifetime of the
+   * process — and the server runs for days — so a dead session wedged until
+   * restart, surfacing as a bare `status N` or a JSON parse error rather
+   * than as "session expired".
+   *
+   * Only a session we did NOT just create is retried: if the handshake ran
+   * in this very call and the request still failed, the failure is real and
+   * repeating it would just double the load on the school's IdP.
+   */
+  private async callWithSession<T>(ctx: IntegrationContext, call: () => Promise<T>): Promise<T> {
+    const handshaken = await this.ensureSession(ctx);
+    try {
+      return await call();
+    } catch (e) {
+      if (handshaken || !looksLikeDeadSession(e)) throw e;
+      await this.clearSession();
+      await this.establishSession(ctx);
+      return call();
+    }
+  }
+
+  /**
+   * Forget the current Tabulex session, in the jar as well as on this
+   * instance, so the next call performs a fresh handshake. Static so
+   * AulaContext can drop a previous login's session without constructing a
+   * client — the jar is shared, the client instances are not.
+   */
+  static async clearSession(http: AulaHttpClient): Promise<void> {
+    await http.jar.removeCookies(TABULEX_BASE, FEDAUTH_COOKIES);
+  }
+
+  private async clearSession(): Promise<void> {
+    this.sessionEstablished = false;
+    await TabulexClient.clearSession(this.http);
+  }
+
+  /** @returns true when this call performed the SSO handshake itself. */
+  private async ensureSession(ctx: IntegrationContext): Promise<boolean> {
+    if (this.sessionEstablished) return false;
+    // The cookie jar lives on the shared AulaHttpClient, not on this
+    // instance — and the MCP server's AulaContext.getTabulex() hands out a
+    // fresh TabulexClient on every call, so `sessionEstablished` starts
+    // `false` far more often than the underlying session actually expired.
+    // Measured live 2026-10-02: 4 Tabulex tool calls in one MCP session ran
+    // the full 6-8-request SSO handshake every time — 27 HTTP calls for
+    // work that needed one handshake. Checking the jar directly (instead of
+    // only the in-memory flag) fixes that regardless of how many
+    // TabulexClient instances get constructed against the same jar, which
+    // is more robust than memoizing the client itself (see aula-context.ts
+    // getTabulex() — left unmemoized on purpose, see its comment).
+    if (await this.hasFedAuthCookie()) {
+      this.sessionEstablished = true;
+      return false;
+    }
     await this.establishSession(ctx);
+    return true;
   }
 
   private async establishSession(ctx: IntegrationContext): Promise<void> {
@@ -350,9 +441,12 @@ export class TabulexClient {
       headers: { ...AJAX_HEADERS, 'x-xsrf-token': await this.xsrfToken() },
     });
     if (res.status !== 200) {
-      throw new TabulexSessionError(`Tabulex GET ${url} failed (status ${res.status})`, {
-        htmlSnippet: res.body.slice(0, 500),
-      });
+      throw new TabulexSessionError(
+        `Tabulex GET ${sanitizeUrl(url)} failed (status ${res.status})`,
+        {
+          htmlSnippet: res.body.slice(0, 500),
+        },
+      );
     }
     return JSON.parse(res.body) as T;
   }
@@ -369,9 +463,12 @@ export class TabulexClient {
       body: JSON.stringify(body),
     });
     if (res.status !== 200) {
-      throw new TabulexSessionError(`Tabulex PUT ${url} failed (status ${res.status})`, {
-        htmlSnippet: res.body.slice(0, 500),
-      });
+      throw new TabulexSessionError(
+        `Tabulex PUT ${sanitizeUrl(url)} failed (status ${res.status})`,
+        {
+          htmlSnippet: res.body.slice(0, 500),
+        },
+      );
     }
     return JSON.parse(res.body) as T;
   }

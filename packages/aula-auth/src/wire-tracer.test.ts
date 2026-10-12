@@ -59,6 +59,27 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl(url)).toBe(url);
   });
 
+  // Seen 2026-10-02: AuthState appeared in clear text in a
+  // live --debug-equivalent trace of the Tabulex SSO handshake. `wctx` is
+  // the same WS-Federation correlator role as `state`/`RelayState`, found in
+  // the same live trace. `wa` is deliberately NOT added — see the
+  // SECRET_URL_PARAMS comment in wire-tracer.ts: its only observed value is
+  // the fixed protocol literal `wsignin1.0`, nothing session-specific.
+  test('redacts the Tabulex/WS-Federation SSO params found in a live trace', () => {
+    const url =
+      'https://borger-aula-login.tabulex.dk/simplesaml/saml2/idp/SSOService.php' +
+      '?AuthState=_8db0bee93c1deb70206c7a88514e8a2ed8e00eb7ce%3Ahttps%3A%2F%2Fexample' +
+      '&wa=wsignin1.0' +
+      '&wctx=rm%3d0%26id%3dpassive%26ru%3d%252f';
+    const out = sanitizeUrl(url);
+    expect(out).not.toContain('8db0bee93c1deb70206c7a88514e8a2ed8e00eb7ce');
+    expect(out).toContain('AuthState=%3Credacted');
+    expect(out).not.toContain('rm%3d0%26id%3dpassive');
+    expect(out).toContain('wctx=%3Credacted');
+    // wa's value is never redacted — see rationale above.
+    expect(out).toContain('wa=wsignin1.0');
+  });
+
   test('redacts refresh_token and id_token too', () => {
     const out = sanitizeUrl(`https://example.com/cb?refresh_token=${JWT}&id_token=${JWT}`);
     expect(out).not.toContain('SIGNATURE');
@@ -193,6 +214,18 @@ describe('sanitizeRequestBody', () => {
     const parsed = JSON.parse(out) as Record<string, unknown>;
     expect(parsed.Cpr).toContain('redacted');
     expect(out).not.toContain('0101201234');
+  });
+
+  // wresult is this flow's WS-Federation equivalent of SAMLResponse
+  // — the security token the Tabulex SSO auto-post hop resubmits as a
+  // hidden form field (see tabulex.ts runSsoHandshake). Tested as a
+  // form-urlencoded body because that's the shape it is actually resubmitted
+  // in (TabulexClient does `new URLSearchParams(fields)`), not JSON.
+  test('redacts wresult in a form-urlencoded body (Tabulex WS-Federation hop)', () => {
+    const body = new URLSearchParams({ wresult: 'SIGNED-TOKEN-XML', wctx: 'rm=0' });
+    const out = sanitizeRequestBody(body);
+    expect(out).not.toContain('SIGNED-TOKEN-XML');
+    expect(out).toContain('wresult=%3Credacted');
   });
 
   test('binary body is summarised as length only', () => {
