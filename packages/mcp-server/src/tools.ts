@@ -240,11 +240,21 @@ export function registerTools(server: McpServer, context: AulaContext): void {
         'Returns a typed manifest of the logged-in guardian: children (with names + ids), ' +
         'institutions, API version, detected widgets, and which subordinate aula.* tools to ' +
         'call. Includes a `usage` block with name-resolution and tool-selection rules. ' +
-        'Call ONCE per session and reuse the result — do not re-call mid-session.',
-      inputSchema: {},
+        'Call ONCE per session and reuse the result — do not re-call mid-session, except ' +
+        'with `probe: true`.',
+      inputSchema: {
+        probe: z
+          .boolean()
+          .optional()
+          .describe(
+            'Also call every ugeplan provider and ugebrev.minuddannelse for the current week ' +
+              "and return `probed`: each source's status (content/empty/error) and item count. " +
+              'Four upstream calls — use it instead of trying those tools one by one.',
+          ),
+      },
     },
-    async () => {
-      const manifest = await buildDiscoverManifest(context);
+    async (args) => {
+      const manifest = await buildDiscoverManifest(context, { probe: args.probe ?? false });
       return jsonContent(manifest);
     },
   );

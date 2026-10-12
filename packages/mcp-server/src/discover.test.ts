@@ -212,3 +212,65 @@ describe('buildDiscoverManifest', () => {
     expect(hint).not.toMatch(/userId[^.]*for[^.]*profileIds/);
   });
 });
+
+describe('buildDiscoverManifest — probe', () => {
+  type Source = () => Promise<{ items: unknown[] }>;
+
+  function probeContext(sources: Partial<Record<string, Source>>, calls: string[] = []) {
+    const base = fakeContext() as unknown as Record<string, unknown>;
+    const provider = (name: string, method: string) => async () => ({
+      [method]: async () => {
+        calls.push(name);
+        return (await sources[name]?.()) ?? { items: [] };
+      },
+    });
+    return {
+      ...base,
+      getGuardianUserId: async () => '5000',
+      getMeebook: provider('meebook', 'getWeekPlan'),
+      getEasyIq: provider('easyiq', 'getWeekPlan'),
+      getEasyIqSkoleportal: provider('skoleportal', 'getWeekPlan'),
+      getMinUddannelse: provider('ugebrev', 'getUgebrev'),
+    } as unknown as AulaContext;
+  }
+
+  test('off by default: no provider is called', async () => {
+    const calls: string[] = [];
+    const m = await buildDiscoverManifest(probeContext({}, calls));
+    expect(m.probed).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  test('reports content / empty per source', async () => {
+    const m = await buildDiscoverManifest(
+      probeContext({
+        skoleportal: async () => ({ items: [{}, {}] }),
+        ugebrev: async () => ({ items: [{}] }),
+      }),
+      { probe: true },
+    );
+    expect(m.probed).toEqual([
+      { tool: 'aula.ugeplan.meebook', status: 'empty' },
+      { tool: 'aula.ugeplan.easyiq', status: 'empty' },
+      { tool: 'aula.ugeplan.easyiq_skoleportal', status: 'content', items: 2 },
+      { tool: 'aula.ugebrev.minuddannelse', status: 'content', items: 1 },
+    ]);
+  });
+
+  test('a failing provider does not sink the others, and its URLs are sanitised', async () => {
+    const m = await buildDiscoverManifest(
+      probeContext({
+        meebook: async () => {
+          throw new Error('GET https://meebook.example/plan?access_token=SUPERSECRET failed (500)');
+        },
+        ugebrev: async () => ({ items: [{}] }),
+      }),
+      { probe: true },
+    );
+    const meebook = m.probed?.find((p) => p.tool === 'aula.ugeplan.meebook');
+    expect(meebook?.status).toBe('error');
+    expect(meebook?.error).toContain('failed (500)');
+    expect(meebook?.error).not.toContain('SUPERSECRET');
+    expect(m.probed?.find((p) => p.tool === 'aula.ugebrev.minuddannelse')?.status).toBe('content');
+  });
+});

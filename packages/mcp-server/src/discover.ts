@@ -12,6 +12,9 @@
  * tool first for the schools you're enrolled in.
  */
 
+import { sanitizeUrl } from '@aula-mcp/aula-auth';
+import type { IntegrationContext } from '@aula-mcp/aula-client';
+import { isoWeekString } from '@aula-mcp/aula-client';
 import type { AulaContext } from './aula-context.ts';
 
 /** A single child the user can act on behalf of. */
@@ -38,6 +41,17 @@ export interface DiscoveredCapability {
   notes?: string;
 }
 
+/** What one ugeplan/ugebrev provider returned during a probe. */
+export interface ProbedSource {
+  tool: string;
+  /** 'empty' = the call succeeded but returned no items. */
+  status: 'content' | 'empty' | 'error';
+  /** Only when status is 'content'. */
+  items?: number;
+  /** Only when status is 'error'; URLs in the message are sanitised. */
+  error?: string;
+}
+
 export interface DiscoverManifest {
   user: {
     name: string;
@@ -58,6 +72,9 @@ export interface DiscoverManifest {
   /** Widget IDs the schools surfaced in pageConfiguration. Useful when
    *  diagnosing "the agent can't find my kid's ugeplan". */
   detectedWidgets: string[];
+  /** Only with `probe: true`: what each ugeplan provider and ugebrev actually
+   *  returned for the current week. */
+  probed?: ProbedSource[];
   /** True when AULA_MCP_RAW=1 — the aula.raw_request escape hatch is callable. */
   rawRequestEnabled: boolean;
   /** True when AULA_MCP_WRITE=1 — write tools (aula.presence.set_template) are
@@ -103,7 +120,10 @@ const WIDGET_PROVIDER_MAP: Readonly<
   },
 });
 
-export async function buildDiscoverManifest(context: AulaContext): Promise<DiscoverManifest> {
+export async function buildDiscoverManifest(
+  context: AulaContext,
+  options: { probe?: boolean } = {},
+): Promise<DiscoverManifest> {
   const client = await context.getClient();
   const record = context.record;
   if (!record) throw new Error('AulaContext: record missing after getClient()');
@@ -164,14 +184,71 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
       nameResolution:
         'Match kid names from the user prompt against children[].name (case-insensitive, partial). E.g. "luk" matches "Lukas". Use child.id for presence childIds and for aula.calendar.events profileIds. Use child.userId only for tools whose schema explicitly asks for a user/profile user ID.',
       pickOne:
-        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors.',
+        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors. If you are about to try several ugeplan/ugebrev tools by hand, call aula.discover with probe:true instead — it makes those calls once, server-side, and returns `probed` with the status per source (content/empty/error).',
       timeWindows:
         'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Times are Europe/Copenhagen.',
       language:
         'Reply in the user\'s language. Format dates as "mandag 12. maj" for Danish output.',
     },
   };
+  if (options.probe) manifest.probed = await probeSources(context, children);
   return manifest;
+}
+
+/**
+ * Call every ugeplan provider and ugebrev for the current week, so the agent
+ * can see which one has content instead of trying them one by one — an empty
+ * ugeplan says nothing about ugebrev, and `detectedWidgets` can miss a widget
+ * that works. Opt-in because it makes four real upstream calls.
+ */
+async function probeSources(
+  context: AulaContext,
+  children: DiscoveredChild[],
+): Promise<ProbedSource[]> {
+  const record = context.record;
+  if (!record) throw new Error('AulaContext: record missing after getClient()');
+  const ctx: IntegrationContext = {
+    isoWeek: isoWeekString(),
+    sessionId: record.username,
+    guardianId: await context.getGuardianUserId(),
+    childIds: children.map((c) => c.id),
+    childUserIds: children.map((c) => (c.userId === undefined ? '' : String(c.userId))),
+    institutionCodes: [
+      ...new Set(children.flatMap((c) => (c.institution?.code ? [c.institution.code] : []))),
+    ],
+  };
+  const probes: { tool: string; run: () => Promise<{ items: unknown[] }> }[] = [
+    {
+      tool: 'aula.ugeplan.meebook',
+      run: async () => (await context.getMeebook()).getWeekPlan(ctx),
+    },
+    { tool: 'aula.ugeplan.easyiq', run: async () => (await context.getEasyIq()).getWeekPlan(ctx) },
+    {
+      tool: 'aula.ugeplan.easyiq_skoleportal',
+      run: async () => (await context.getEasyIqSkoleportal()).getWeekPlan(ctx),
+    },
+    {
+      tool: 'aula.ugebrev.minuddannelse',
+      run: async () => (await context.getMinUddannelse()).getUgebrev(ctx),
+    },
+  ];
+  // allSettled: one broken provider must not take the others down.
+  const settled = await Promise.allSettled(probes.map((p) => p.run()));
+  return probes.map(({ tool }, i): ProbedSource => {
+    const outcome = settled[i];
+    if (outcome?.status === 'fulfilled') {
+      const items = outcome.value.items.length;
+      return items > 0 ? { tool, status: 'content', items } : { tool, status: 'empty' };
+    }
+    const reason = outcome?.reason;
+    const message = reason instanceof Error ? reason.message : String(reason);
+    // A failure message can embed the request URL, which carries the token.
+    return {
+      tool,
+      status: 'error',
+      error: message.replace(/https?:\/\/\S+/g, (url) => sanitizeUrl(url)),
+    };
+  });
 }
 
 /**
