@@ -12,7 +12,11 @@
  * tool first for the schools you're enrolled in.
  */
 
+import { sanitizeUrl } from '@aula-mcp/aula-auth';
+import type { IntegrationContext, NormalisedWeekPlan } from '@aula-mcp/aula-client';
+import { isoWeekString } from '@aula-mcp/aula-client';
 import type { AulaContext } from './aula-context.ts';
+import { redactCprFromError } from './redact.ts';
 
 /** A single child the user can act on behalf of. */
 export interface DiscoveredChild {
@@ -38,6 +42,21 @@ export interface DiscoveredCapability {
   notes?: string;
 }
 
+/** Result of actually calling one ugeplan/ugebrev provider during a probe. */
+export interface ProbedSourceResult {
+  /** The aula.* tool this result is for. */
+  tool: string;
+  /** 'content': returned at least one item. 'empty': call succeeded, no
+   *  items. 'error': the call itself failed — see `error`. */
+  status: 'content' | 'empty' | 'error';
+  /** Item count. Only present when status is 'content'. */
+  items?: number;
+  /** Sanitised failure message. Only present when status is 'error'. Run
+   *  through the same CPR/URL redaction as every other tool error — see
+   *  redactCprFromError (tools.ts) and sanitizeUrl (aula-auth). */
+  error?: string;
+}
+
 export interface DiscoverManifest {
   user: {
     name: string;
@@ -58,6 +77,11 @@ export interface DiscoverManifest {
   /** Widget IDs the schools surfaced in pageConfiguration. Useful when
    *  diagnosing "the agent can't find my kid's ugeplan". */
   detectedWidgets: string[];
+  /** Only present when called with `probe: true` — the result of actually
+   *  calling every ugeplan provider + ugebrev for the current week, so the
+   *  agent can see which source has real content instead of brute-forcing
+   *  them one by one. */
+  probed?: ProbedSourceResult[];
   /** True when AULA_MCP_RAW=1 — the aula.raw_request escape hatch is callable. */
   rawRequestEnabled: boolean;
   /** True when AULA_MCP_WRITE=1 — write tools (aula.presence.set_template) are
@@ -69,6 +93,8 @@ export interface DiscoverManifest {
   usage: {
     cache: string;
     nameResolution: string;
+    /** Which capability answers which kind of question. */
+    whichSource: string;
     pickOne: string;
     timeWindows: string;
     language: string;
@@ -108,13 +134,29 @@ const WIDGET_PROVIDER_MAP: Readonly<
   },
 });
 
-export async function buildDiscoverManifest(context: AulaContext): Promise<DiscoverManifest> {
+export interface BuildDiscoverManifestOptions {
+  /** When true, actually call every ugeplan provider + ugebrev for the
+   *  current week and report which has content (see `probeUgeplanAndUgebrev`
+   *  below). Off by default — this makes real upstream calls and costs time,
+   *  which is exactly what a plain `aula.discover` is meant to avoid. */
+  probe?: boolean;
+}
+
+export async function buildDiscoverManifest(
+  context: AulaContext,
+  options: BuildDiscoverManifestOptions = {},
+): Promise<DiscoverManifest> {
   const client = await context.getClient();
   const record = context.record;
   if (!record) throw new Error('AulaContext: record missing after getClient()');
 
+  // forceRefresh: discover is the tool callers are told to re-run on
+  // "children or widgets unknown" — that instruction has to mean "fetch
+  // current data", so it bypasses AulaContext's profiles cache rather than
+  // potentially serving a stale answer back to the same prompt that asked
+  // for a refresh.
   const [profilesData, contextData] = await Promise.all([
-    client.getProfilesByLogin(),
+    context.getProfilesByLogin({ forceRefresh: true }),
     client.getProfileContext('guardian').catch(() => undefined),
   ]);
 
@@ -167,16 +209,116 @@ export async function buildDiscoverManifest(context: AulaContext): Promise<Disco
       cache:
         'Reuse this manifest for the rest of the session. Do not call aula.discover again unless a tool reports unknown children/widgets.',
       nameResolution:
-        'Match kid names from the user prompt against children[].name (case-insensitive, partial). E.g. "luk" matches "Lukas". Use child.id for presence childIds and for aula.calendar.events profileIds. Use child.userId only for tools whose schema explicitly asks for a user/profile user ID.',
+        'Match kid names from the user prompt against children[].name (case-insensitive, partial). E.g. "luk" matches "Lukas". Use the matched child.id for BOTH childIds and profileIds — both take the numeric id. children[].userId is a string used only internally by the integration tools.',
+      whichSource:
+        'Danish users mix these up, and they are different sources. "Skoleskema", "lektioner", "hvornår har de matematik" → aula.calendar.events. "Ugeplan", "ugeskema", "ugebrev", "hvad sker der i klassen denne uge" → the teacher-written text in ugeplan/ugebrev. If the wording could mean either, check both before answering.',
       pickOne:
-        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors.',
+        'For ugeplan/ugebrev/opgaver/huskelisten, start with capabilities[area].tools[0] — the provider this user most likely has. But if it errors OR returns empty, work through the remaining tools in the list, then try the neighbouring capability: a school with nothing in ugeplan often has the real content in ugebrev, and the other way round. Only report "nothing found" once ugeplan AND ugebrev have both come back empty. If you are about to brute-force several ugeplan tools plus ugebrev by hand (3+ calls, all empty so far), call aula.discover again with probe:true instead — it makes those same calls once, server-side, and returns a `probed` list with each source\'s status (content/empty/error) and item count, so you can go straight to the one that actually has content.',
       timeWindows:
-        'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Times are Europe/Copenhagen.',
+        'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Request windows are Europe/Copenhagen wall-clock, but aula.calendar.events RETURNS UTC timestamps — convert before showing a time (+2h summer, +1h winter).',
       language:
         'Reply in the user\'s language. Format dates as "mandag 12. maj" for Danish output.',
     },
   };
+  if (options.probe) {
+    manifest.probed = await probeUgeplanAndUgebrev(context, children);
+  }
   return manifest;
+}
+
+/**
+ * Actually call every ugeplan provider + ugebrev for the current week and
+ * report which one has content — instead of the agent brute-forcing all
+ * three ugeplan tools the way a real session was observed to do:
+ * `detectedWidgets` can omit a widget that
+ * works, and an empty 200 from ugeplan doesn't mean ugebrev is empty too.
+ *
+ * Uses the children/institution codes `buildDiscoverManifest` already
+ * resolved — the caller never has to supply them. Each provider is probed
+ * independently (`Promise.allSettled`) so one failing integration can never
+ * take the others, or the rest of `aula.discover`, down with it.
+ */
+async function probeUgeplanAndUgebrev(
+  context: AulaContext,
+  children: DiscoveredChild[],
+): Promise<ProbedSourceResult[]> {
+  const ctx = await buildProbeIntegrationContext(context, children);
+
+  const probes: ReadonlyArray<{ tool: string; run: () => Promise<NormalisedWeekPlan> }> = [
+    {
+      tool: 'aula.ugeplan.meebook',
+      run: async () => (await context.getMeebook()).getWeekPlan(ctx),
+    },
+    {
+      tool: 'aula.ugeplan.easyiq',
+      run: async () => (await context.getEasyIq()).getWeekPlan(ctx),
+    },
+    {
+      tool: 'aula.ugeplan.easyiq_skoleportal',
+      run: async () => (await context.getEasyIqSkoleportal()).getWeekPlan(ctx),
+    },
+    {
+      tool: 'aula.ugebrev.minuddannelse',
+      run: async () => (await context.getMinUddannelse()).getUgebrev(ctx),
+    },
+  ];
+
+  const settled = await Promise.allSettled(probes.map((p) => p.run()));
+  return settled.map((outcome, i): ProbedSourceResult => {
+    // Guarded by construction: `settled` has one entry per `probes` element.
+    const tool = probes[i]?.tool ?? 'unknown';
+    if (outcome.status === 'fulfilled') {
+      const items = outcome.value.items.length;
+      return items > 0 ? { tool, status: 'content', items } : { tool, status: 'empty' };
+    }
+    return { tool, status: 'error', error: sanitizeProbeError(outcome.reason) };
+  });
+}
+
+/** Build the shared IntegrationContext every ugeplan/ugebrev provider takes,
+ *  from data `buildDiscoverManifest` already fetched — mirrors tools.ts's
+ *  `buildIntegrationCtx`, but a probe has no caller-supplied childIds /
+ *  institutionCodes to start from, only the manifest's own `children`. */
+async function buildProbeIntegrationContext(
+  context: AulaContext,
+  children: DiscoveredChild[],
+): Promise<IntegrationContext> {
+  const record = context.record;
+  if (!record) throw new Error('AulaContext: record missing after getClient()');
+  const guardianId = await context.getGuardianUserId();
+  const institutionCodes = Array.from(
+    new Set(
+      children
+        .map((c) => c.institution?.code)
+        .filter((code): code is string => typeof code === 'string' && code.length > 0),
+    ),
+  );
+  return {
+    isoWeek: isoWeekString(),
+    sessionId: record.username,
+    guardianId,
+    childIds: children.map((c) => c.id),
+    childUserIds: children.map((c) => (c.userId !== undefined ? String(c.userId) : '')),
+    institutionCodes,
+  };
+}
+
+/**
+ * Sanitise a probe failure the same way every other tool error is sanitised
+ * before it can reach the model (see `redactCprFromError` and `guardTabulex`
+ * in tools.ts, `sanitizeUrl` in aula-auth) — a probe calls real upstream
+ * integrations, so its failures can carry the same CPR-in-URL or
+ * token-in-URL risk as any other integration call.
+ */
+function sanitizeProbeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // Redact any embedded URL wholesale first — sanitizeUrl only understands
+  // whole URLs, and a failure message sometimes embeds the request URL
+  // verbatim (access_token / widget-token query params, or a Tabulex-style
+  // CPR path segment).
+  const urlSanitised = message.replace(/https?:\/\/\S+/g, (url) => sanitizeUrl(url));
+  // Then redact any CPR-shaped digits left outside of a URL.
+  return redactCprFromError(new Error(urlSanitised)).message;
 }
 
 /**
@@ -251,28 +393,66 @@ function buildCapabilities(
     },
     calendar: {
       summary:
-        'School-schedule lessons (skoleskema). Pass `range: "this_week"` for the simplest call.',
+        'The lesson timetable (skoleskema) — subjects, times, rooms. Not the teacher-written weekly letter; that is ugeplan/ugebrev. Pass `range: "this_week"` for the simplest call. Returns UTC timestamps, and the same lesson often appears twice (subject plus support staff or a parallel group) — surface both.',
       tools: ['aula.calendar.events'],
     },
     messages: {
-      summary: writeEnabled
-        ? 'Aula messaging threads, and marking a thread read. Sensitive threads ' +
-          'require MitID step-up.'
-        : 'Aula messaging threads. Sensitive threads require MitID step-up.',
-      tools: writeEnabled
-        ? ['aula.messages.list_threads', 'aula.messages.get_thread', 'aula.messages.mark_read']
-        : ['aula.messages.list_threads', 'aula.messages.get_thread'],
-      ...(writeEnabled
-        ? {
-            notes:
-              'aula.messages.mark_read is irreversible — Aula offers no way to set a ' +
-              'thread back to unread. Only call it for threads the user has actually seen.',
-          }
-        : {
-            notes:
-              'aula.messages.mark_read (marking a thread read) is available only when ' +
-              'the server runs with AULA_MCP_WRITE=1.',
-          }),
+      summary:
+        'Aula messaging threads. list_threads gives a compact inbox (unread_only, child_ids); ' +
+        'new_since answers "anything new since X"; get_thread reads one thread by its ' +
+        'thread_ref. Reading never marks a thread as read in Aula' +
+        (writeEnabled ? ' — only mark_read does' : '') +
+        '. Sensitive threads require MitID step-up.',
+      tools: [
+        'aula.messages.list_threads',
+        'aula.messages.new_since',
+        'aula.messages.get_thread',
+        'aula.messages.find_recipients',
+        ...(writeEnabled
+          ? [
+              'aula.messages.prepare_reply',
+              'aula.messages.send_reply',
+              'aula.messages.prepare_thread',
+              'aula.messages.send_thread',
+              'aula.messages.mark_read',
+            ]
+          : []),
+      ],
+      notes:
+        'Threads marked `sensitive: true` are a separate category: listed by subject only, ' +
+        'refused by the aula.messages.* tools, and handled through the sensitive capability. ' +
+        'find_recipients finds a person in a group by name AND role; several matches mean ' +
+        'asking the user, never picking.' +
+        (writeEnabled
+          ? ' Replying and writing a new thread are two steps each: prepare_reply / ' +
+            'prepare_thread send nothing and return a preview; send_reply / send_thread send ' +
+            'it. Show the preview verbatim and get an explicit yes in between — never send a ' +
+            'message the user has not seen. aula.messages.mark_read is irreversible — Aula ' +
+            'offers no way to set a thread back to unread. Only call it for threads the user ' +
+            'has actually seen.'
+          : ' aula.messages.mark_read (marking a thread read) is available only when the ' +
+            'server runs with AULA_MCP_WRITE=1.'),
+    },
+    contacts: {
+      summary:
+        "Who is in your children's groups. groups(child_ids) → group_refs; list(group_ref) → " +
+        'the children with their guardians (`relation`: Mor/Far…), or the guardians, or the ' +
+        'staff; parents() → kontaktforældre. Read-only. Identify a person by name AND ' +
+        'relation — names repeat. Each person has a session-stable `person_ref`.',
+      tools: ['aula.contacts.groups', 'aula.contacts.list', 'aula.contacts.parents'],
+    },
+    sensitive: {
+      summary:
+        'Sensitive message threads. Reading is gated: prepare_read opens nothing and returns ' +
+        'the subject; read_thread opens the thread only after the user explicitly agreed.' +
+        (writeEnabled
+          ? ' Replies are prepared from the listing and sent without opening the thread.'
+          : ''),
+      tools: [
+        'aula.sensitive.prepare_read',
+        'aula.sensitive.read_thread',
+        ...(writeEnabled ? ['aula.sensitive.prepare_reply', 'aula.sensitive.send_reply'] : []),
+      ],
     },
     notifications: {
       summary: 'Unread items + activity badge counts for the active guardian.',
@@ -303,7 +483,7 @@ function buildCapabilities(
       ...(opgaverDetected.length === 0
         ? {
             notes:
-              'Min Uddannelse opgaver widget (0030) not detected — call may return empty. Skip if user did not specifically ask for opgaver.',
+              'Min Uddannelse opgaver widget (0030) not in detectedWidgets. That list comes from the page configuration Aula returns and has been observed to omit widgets that work, so treat it as a hint, not an inventory — the call is cheap, so make it anyway when the user asked for opgaver.',
           }
         : {}),
     },
@@ -313,7 +493,7 @@ function buildCapabilities(
       ...(ugebrevDetected.length === 0
         ? {
             notes:
-              'Min Uddannelse ugebrev widget (0029) not detected — call may return empty. Skip if user did not specifically ask for ugebrev.',
+              'Min Uddannelse ugebrev widget (0029) not in detectedWidgets. That list comes from the page configuration Aula returns and has been observed to omit widgets that work, so treat it as a hint, not an inventory — the call is cheap, so make it anyway when the user asked for ugebrev.',
           }
         : {}),
     },
@@ -323,7 +503,7 @@ function buildCapabilities(
       ...(huskelistenDetected.length === 0
         ? {
             notes:
-              'Systematic widget (0062) not detected — call may return empty. Skip if user did not specifically ask for huskelisten.',
+              'Systematic widget (0062) not in detectedWidgets. That list comes from the page configuration Aula returns and has been observed to omit widgets that work, so treat it as a hint, not an inventory — the call is cheap, so make it anyway when the user asked for huskelisten.',
           }
         : {}),
     },
@@ -333,7 +513,7 @@ function buildCapabilities(
       ...(lektierDetected.length === 0
         ? {
             notes:
-              'EasyIQ Lektier widget (0142) not detected — call may return empty. Skip if user did not specifically ask for lektier.',
+              'EasyIQ Lektier widget (0142) not in detectedWidgets. That list comes from the page configuration Aula returns and has been observed to omit widgets that work, so treat it as a hint, not an inventory — the call is cheap, so make it anyway when the user asked for lektier.',
           }
         : {}),
     },
@@ -342,7 +522,7 @@ function buildCapabilities(
         'Absence reporting ("Fravær - forældreindberetning", widget 0047) via Tabulex — ' +
         "separate from Aula's own presence/komme-gå system. Call aula.fravaer.tabulex_boern " +
         "first to get each child's `child_ref`, then pass that to the other " +
-        'aula.fravaer.tabulex_* tools. Refs are valid for the current server run only.',
+        'aula.fravaer.tabulex_* tools. Refs are valid for the current MCP session only.',
       tools: writeEnabled
         ? [
             'aula.fravaer.tabulex_boern',
@@ -361,7 +541,7 @@ function buildCapabilities(
           ],
       notes:
         (fravaerDetected.length === 0
-          ? 'Widget 0047 not detected — call may fail or return empty. Skip if user did not ' +
+          ? 'Widget 0047 is not in detectedWidgets — a hint, not an inventory. Try it anyway if the user asked about ' +
             'specifically ask about Tabulex fravær. '
           : '') +
         (writeEnabled

@@ -589,3 +589,122 @@ describe('AulaClient.getPosts', () => {
     expect(http.requested.at(-1)?.url).toContain('isUnread=true');
   });
 });
+
+describe('AulaClient messaging — threads listing (2026-10-10)', () => {
+  // Fixture threads only. No real thread, name or id appears in this file.
+  function threads(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 100 + i,
+      subscriptionId: 900 + i,
+      read: true,
+    }));
+  }
+
+  test('pageSize is applied client-side, because Aula ignores it', async () => {
+    // Measured live 2026-10-10: asking Aula for 3 returned 20. Forwarding
+    // pageSize used to promise the caller something Aula never honoured.
+    const http = new FakeHttp();
+    http.enqueue(
+      { status: 200, body: envelope([]) }, // probe
+      { status: 200, body: envelope({ threads: threads(20), moreMessagesExist: true }) },
+    );
+    const c = makeClient(http);
+    const page = await c.getThreadsPage({ pageSize: 3 });
+    expect(page.threads).toHaveLength(3);
+    expect(page.hasMorePages).toBe(true);
+    // And the parameter is no longer sent at all.
+    expect(http.requested[1]?.url).not.toContain('pageSize');
+  });
+
+  test("unread and per-child filters use Aula's own parameter names", async () => {
+    const http = new FakeHttp();
+    http.enqueue(
+      { status: 200, body: envelope([]) },
+      { status: 200, body: envelope({ threads: [] }) },
+    );
+    const c = makeClient(http);
+    await c.getThreadsPage({ filterOn: 'Unread', activeChildren: [11, 22] });
+    const url = http.requested[1]?.url ?? '';
+    expect(url).toContain('method=messaging.getThreads');
+    expect(url).toContain('filterOn=Unread');
+    expect(url).toContain('activeChildren%5B%5D=11');
+    expect(url).toContain('activeChildren%5B%5D=22');
+  });
+
+  test('no filters means none are sent', async () => {
+    const http = new FakeHttp();
+    http.enqueue(
+      { status: 200, body: envelope([]) },
+      { status: 200, body: envelope({ threads: [] }) },
+    );
+    const c = makeClient(http);
+    await c.getThreadsPage();
+    const url = http.requested[1]?.url ?? '';
+    expect(url).not.toContain('filterOn');
+    expect(url).not.toContain('activeChildren');
+  });
+});
+
+describe('AulaClient messaging — new thread', () => {
+  test('findRecipients searches profiles as the new-message form does', async () => {
+    const http = new FakeHttp();
+    http.enqueue(
+      { status: 200, body: envelope([]) },
+      { status: 200, body: envelope({ results: [{ id: 9001, docType: 'Profile' }] }) },
+    );
+    const c = makeClient(http);
+    const out = await c.findRecipients({
+      text: ' Mor Fixture ',
+      ownInstitutionProfileId: 5005,
+      portalRoles: ['guardian'],
+    });
+    expect(out).toEqual([{ id: 9001, docType: 'Profile' }]);
+    const url = new URL(http.requested[1]?.url ?? '');
+    expect(url.searchParams.get('method')).toBe('search.findRecipients');
+    expect(url.searchParams.get('text')).toBe('Mor Fixture');
+    expect(url.searchParams.get('id')).toBe('5005');
+    expect(url.searchParams.get('fromModule')).toBe('messages');
+    expect(url.searchParams.getAll('docTypes[]')).toEqual(['Profile']);
+    expect(url.searchParams.getAll('portalRoles[]')).toEqual(['guardian']);
+  });
+
+  test('findRecipients refuses an empty search without calling Aula', async () => {
+    const http = new FakeHttp();
+    const c = makeClient(http);
+    await expect(
+      c.findRecipients({ text: '  ', ownInstitutionProfileId: 1, portalRoles: [] }),
+    ).rejects.toThrow(/empty/);
+    expect(http.requested.length).toBe(0);
+  });
+
+  test('startNewThread posts a non-sensitive thread without BCC, with CSRF', async () => {
+    const http = new FakeHttp();
+    http.setCookie('Csrfp-Token', 'CSRF-1');
+    http.enqueue(
+      { status: 200, body: envelope([]) }, // version probe
+      { status: 200, body: envelope({}) }, // getProfileContext bootstrap before the first POST
+      { status: 200, body: envelope({ data: 777 }) },
+    );
+    const c = makeClient(http);
+    const out = await c.startNewThread({
+      subject: 'Emne',
+      html: '<p>Hej</p>',
+      recipients: [{ id: 9001, mailBoxOwnerType: 'institutionProfile' }],
+      creator: { id: 5005, mailBoxOwnerType: 'institutionProfile' },
+    });
+    expect(out).toEqual({ data: 777 });
+    const post = http.requested[2];
+    expect(post?.method).toBe('POST');
+    expect(post?.headers?.['csrfp-token']).toBe('CSRF-1');
+    expect(post?.url).toContain('method=messaging.startNewThread');
+    expect(JSON.parse(String(post?.body))).toEqual({
+      subject: 'Emne',
+      recipients: [{ id: 9001, mailBoxOwnerType: 'institutionProfile' }],
+      bccRecipients: [],
+      sensitive: false,
+      creator: { id: 5005, mailBoxOwnerType: 'institutionProfile' },
+      message: { text: '<p>Hej</p>', attachmentIds: [] },
+      forwardInfo: null,
+    });
+  });
+});

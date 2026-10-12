@@ -98,6 +98,43 @@ The Python reference has accumulated lessons in its issue tracker. The README ha
 
 See the README's table for issue links.
 
+## The Tabulex session: shared, reusable, and recoverable
+
+The Tabulex session is a WS-Federation `FedAuth` cookie that lives in the **shared** cookie jar on
+`AulaContext`'s single `AulaHttpClient` — not on a `TabulexClient` instance. `getTabulex()` hands out
+a fresh client per call, so its `sessionEstablished` flag starts `false` every time. Until 2026-10
+`ensureSession()` checked only that flag, which meant every single Fravær tool call re-ran the full
+6-8-request SSO handshake: measured live 2026-10-02 as **27 HTTP calls for 4 tool calls**.
+
+`ensureSession()` now checks the jar before handshaking. That alone was not enough, and the gap is
+worth remembering because it is the kind that hides for weeks:
+
+- **A FedAuth cookie carries no client-visible expiry.** The jar keeps handing it out long after
+  Tabulex has forgotten the session. With only the jar check, the handshake would never run again
+  for the lifetime of the process — and this server runs for days — so a dead session wedged until
+  restart, surfacing as a bare `status N` or a JSON parse error (a sign-in page answered with 200
+  and handed to `JSON.parse`) rather than as "session expired". `callWithSession()` therefore
+  retries **once**: on a failure that looks like a dead session, it removes the FedAuth cookies,
+  re-handshakes and repeats the call. Only a session it did *not* just create is retried — if the
+  handshake ran in this very call and the request still failed, the failure is real, and retrying
+  would just double the load on the school's IdP.
+- **`reportSick` is deliberately excluded from that retry.** Tabulex has no undo for it, and a write
+  that failed after landing is indistinguishable from one that never landed. The tool layer reads
+  the state back instead.
+- **A token switch has to drop the session.** `invalidate()` cannot clear the jar synchronously, so
+  it sets `tabulexSessionStale`; the next `getTabulex()` clears the FedAuth cookies before handing
+  out the client. Without this, the next guardian's first Fravær call would adopt the previous
+  login's session — the same hole the profiles cache guards against, one layer down.
+
+Removal is by cookie name, scoped to Tabulex's host: clearing a Tabulex session must never log the
+user out of Aula itself, since both live in the one shared jar. `AulaCookieJar.removeCookies()`
+exists for this — before it, the jar could store and read cookies but never delete one, which is
+precisely why a dead session had no way back.
+
+Note that this applies to the Streamable HTTP transport. The legacy `/sse` path builds its own
+`AulaContext` per session (`setup.ts`), so each SSE session has its own jar and re-handshakes once;
+neither the shared session nor the profiles cache reaches it.
+
 ## Wire-trace + sanitisation
 
 `--debug` tees a JSONL transcript of every request/response to `~/.config/aula-mcp/transcripts/login-<timestamp>.jsonl`. The redaction lists live in `wire-tracer.ts` (`SECRET_HEADERS`, `SECRET_BODY_FIELDS`, `SECRET_URL_PARAMS`).
@@ -105,10 +142,23 @@ See the README's table for issue links.
 What's redacted:
 
 - **Headers**: `authorization`, `aula-authorization`, `cookie`, `set-cookie`, `csrfp-token`, `x-csrf-token`.
-- **Body fields** (form-urlencoded or JSON): passwords, MitID auth codes, OAuth codes/tokens, code verifiers, SAMLResponse, RelayState, anti-forgery tokens, session UUIDs, M1, flowValueProof, randomA, identityClaim, chosenOptionJson.
-- **URL query params**: `access_token`, `refresh_token`, `code`, `code_verifier`, `state`, `mitidauthcode`, `__requestverificationtoken`, `ticket`, `session_code`.
+- **Body fields** (form-urlencoded or JSON): passwords, MitID auth codes, OAuth codes/tokens, code verifiers, SAMLResponse, RelayState, anti-forgery tokens, session UUIDs, M1, flowValueProof, randomA, identityClaim, chosenOptionJson, CPR, `wresult` (WS-Federation's SAMLResponse equivalent — the Tabulex SSO handshake's security token).
+- **URL query params**: `access_token`, `refresh_token`, `code`, `code_verifier`, `state`, `mitidauthcode`, `__requestverificationtoken`, `ticket`, `session_code`, `authstate` (Tabulex SSO's short-lived state correlator), `wctx` (WS-Federation's `state` equivalent).
 
 What is _not_ redacted: structural fields (`status.code`, error messages, redirect URLs minus their secret query params, HTTP method/host/path), and timing. These are what makes a transcript diagnosable.
+
+### The same tracer, wired into the long-running server
+
+`--debug` above is the CLI's path (`aula login`/`aula doctor`): it builds an `InMemoryTracer` or `JsonlFileTracer` and passes it to a one-shot `AulaHttpClient`. Until 2026-10, `packages/mcp-server/src/server.ts` never did the equivalent — `AulaContext` always built its `AulaHttpClient` with no `tracer` option, so it silently used `AulaHttpClient`'s own noop default. The only server-side visibility was `AULA_MCP_LOG=1`, which logs `http.request` (method + sanitised URL) from `logger.debug` calls in `http.ts` — no status, no duration, no response body, because that line is independent of the tracer. Confirmed live 2026-10-02: a 35-request Tabulex SSO + absence-report session produced 35 `http.request` log lines and zero way to tell which of them succeeded.
+
+`packages/mcp-server/src/trace-config.ts` closes that gap: `AULA_MCP_TRACE_FILE=/path/to/file.jsonl`, read at boot, builds a `JsonlFileTracer` and passes it into `AulaContext`'s constructor, which forwards it to the shared `AulaHttpClient` every integration plugin (Aula, Tabulex, EasyIQ, Meebook, Min Uddannelse, Systematic) uses. Unset (the default): `createHttpTracer` returns `undefined`, `AulaContext` omits the `tracer` option, and `AulaHttpClient` falls back to its noop exactly as before this file existed — no behaviour change for a server that doesn't opt in.
+
+The trace file:
+
+- Is created (or reused) with **mode 0600** at boot, via `ensureTraceFileWritable` — not lazily on first write, so a path the process can't write to (bad parent dir, read-only filesystem) fails startup loudly instead of the server coming up "healthy" and then dropping every trace entry for a debugging session that looked like it was working.
+- Contains the **same sanitised shape** as a CLI `--debug` transcript — one JSON object per HTTP exchange, redacted by the same `SECRET_HEADERS`/`SECRET_BODY_FIELDS`/`SECRET_URL_PARAMS` lists in `wire-tracer.ts`, including the CPR-shaped-path-segment redaction Tabulex's Fravær API needs (see below).
+- Is **append-only and unbounded** — nothing in this server rotates, caps, or truncates it. It grows for as long as `AULA_MCP_TRACE_FILE` stays set. An operator enabling it for a debugging session is expected to unset the variable and remove/rotate the file afterwards; this is a diagnostic switch, not a standing audit log.
+- Covers **both transports**: the shared Streamable HTTP context (`sharedContext` in `server.ts`) and, separately, each legacy `/sse` session's own per-connection `AulaContext`.
 
 ### Why URL query params needed sanitising too
 
@@ -198,15 +248,54 @@ Two mechanisms close that gap, deliberately from different directions:
   it requires the argon2id hash itself, salt included, so anyone who can derive it already holds
   everything it might protect.
 - **A revision check per request.** `aula auth revoke` writes the file from a separate process,
-  and the server compares the file's mtime+size before each request, reloading when it differs.
-  One `stat` per request buys a revoke that takes effect immediately, on a running service, with
-  no restart and no race against the server's own writes. Pending authorization codes are dropped
+  and the server compares a hash of the file's content before each request, reloading when it
+  differs. The first version compared mtime+size instead; it passed on Windows and failed on the
+  Linux host, where the kernel stamps file times on a coarse tick and a same-size rewrite within
+  that tick is invisible. A revoke also always bumps `revoked_at`, so it changes the content even
+  when there is nothing left to remove. One small read per request buys a revoke that takes effect
+  immediately, on a running service, with no restart.
+
+An independent review then found the mirror image of the first bug: a revoke landing between the
+server's own write and its revision read was adopted as the server's revision, leaving a token
+issued in that same request valid in memory. `save()` now returns the revision of exactly what
+it wrote, and `persist()` syncs before writing and re-syncs if the file afterwards holds anything
+else — the external change wins. One gap is left deliberately: the sub-millisecond window
+between that first sync and the write. Closing it for certain needs a file lock shared with the
+CLI, which was judged disproportionate for a command an operator runs by hand. Pending authorization codes are dropped
   along with the reload — honouring a code minted before a revoke would hand out fresh tokens
   seconds after access was withdrawn.
 
 Client registrations survive a plain revoke. They are public metadata, not access, and dropping
 them turns "sign in again" into "remove and re-add the connector in claude.ai". `--clients` is
 there for when the registrations themselves are what you distrust.
+
+## Streamable HTTP sessions: one transport per client
+
+The first deployment authenticated against claude.ai perfectly and then showed no tools. The cause
+was in `server.ts`, not the auth layer: it connected a single stateful transport at boot, and a
+stateful transport accepts exactly one `initialize` in its lifetime. The first client owned the
+server until it restarted; every later one — a second device, a new tab, claude.ai simply
+reconnecting — got `400 Server already initialized`, never received a session id, and had every
+following call refused.
+
+`mcp-sessions.ts` gives each client its own server and transport, keyed by `mcp-session-id`. An
+unknown session id gets 404, which the MCP spec defines as "start a new session", so an evicted or
+restarted session recovers without anyone noticing. Idle sessions are swept, and a full map evicts
+its least recently active session rather than refusing the new one — only authenticated callers
+reach this code, and a refusal would turn a busy moment into a lockout.
+
+Eviction has one hard exception: a session with a request in flight is never closed. The SDK's
+`close()` drops a pending JSON response without resolving it, so evicting a busy session does not
+fail its call — it hangs it forever. When every session is busy the cap is exceeded briefly
+instead. The cap is enforced after a session has landed, not reserved before `initialize`: a
+reservation could only evict sessions that already existed, so a burst of concurrent initializes
+against a near-empty map found nothing to evict and every one of them got in. A session counts as
+busy until its own `initialize` response is out, so a burst cannot evict a session mid-handshake.
+
+All sessions share one `AulaContext`. Each context de-duplicates its own token refresh; one context
+per session would let several sessions refresh Aula's tokens at once, and a rotating refresh token
+lets the loser of that race invalidate the winner. It also makes `child_ref` handles per session:
+a ref minted in one conversation means nothing in another.
 
 ## CPR stays on this side of the tool boundary
 
@@ -222,7 +311,7 @@ child's CPR is a different category of data from "was he away on Tuesday", and n
 reporting a child sick actually needs the number — only the ability to say *which* child.
 
 So the tool layer trades in an opaque `child_ref` (`tbx_…`) and keeps the ref→CPR map in memory
-for the life of the process. Refs are deliberately not persisted: one that survived a restart
+for the life of the MCP session. Refs are deliberately not persisted: one that survived a restart
 would be a CPR cache on disk under another name. Two supporting choices:
 
 - The child entry is built from an **allowlist**, not by deleting the CPR from the upstream
@@ -233,6 +322,88 @@ would be a CPR cache on disk under another name. Two supporting choices:
   response whose shape on an actual absence day has never been observed — which is exactly why it
   cannot be asserted to be CPR-free. `TabulexClient` still returns it; the boundary is drawn at
   the tool layer, where data leaves the machine, not in the client that models the API.
+
+### Failures are part of the boundary
+
+The first version of this boundary was verified field by field — on successful responses only.
+Review found two other exits. A tool handler that throws has its `error.message` returned to the
+client verbatim, and Tabulex errors embedded the request URL with the CPR in it; and
+`AulaHttpClient` logged raw URLs, so `AULA_MCP_LOG=1` would have written the CPR — and Aula's
+`access_token` — to journald. Both now go through `sanitizeUrl`, and the tool layer wraps the
+Tabulex client in a proxy that strips anything CPR-shaped from any error, so a tool added later is
+covered without anyone remembering a `catch`. `meld_syg` passes nothing of Tabulex's response on.
+The lesson generalises: checking what a boundary returns is not the same as checking everything
+that crosses it.
+
+## Sending messages: drafts, cross-checks, read-back
+
+Messages are the first tools whose output other people read, so "the model asked for it" cannot be
+what triggers a send. Three mechanisms carry that, the same for a reply, a reply in a sensitive
+thread and a new thread.
+
+**A draft the model cannot invent.** `prepare_*` sends nothing; it returns a `draft_ref` and the
+exact preview the user has to see. `send_*` takes only that ref. Refs live in process memory for
+five minutes and are taken out of the store *before* the send, so a send that fails halfway — where
+Aula may or may not have posted — cannot be retried into a duplicate with the same ref. A
+`confirm: true` argument would not do this: the model can set it itself.
+
+**Two sources agree on the address, or nothing is drafted** — for a reply and a new thread. (A
+reply in a sensitive thread is the exception: it may not open the thread, so it uses the listing's
+thread id alone, the number the ordinary path cross-checks; see below.) Both Aula ids involved in
+sending turned out to be different from what the frontend's naming suggests, and both were caught
+by a cross-check before anything went out:
+
+- A reply targets the thread's own `id`. Aula's frontend calls the value it sends
+  "subscriptionId", but the listing's `subscriptionId` field is a different number; the first
+  version expected it, and the check that the listing and the opened thread agree on the id refused
+  before sending.
+- A new thread's recipient is the person's institution-profile id. In a contact list, a guardian
+  listed under a child carries only `id`, no `institutionProfileId`. `prepare_thread` therefore
+  runs Aula's own recipient search (the new-message form's `search.findRecipients`) for the person
+  and drafts only if it returns them under that same number, with the same name, and with the same
+  role when both state one. A hit with the same name and another id is treated as a different
+  person; a hit with the id and another name as the two sources not meaning the same number.
+  Only parents and staff can be recipients, never an alias profile, and one person reached under
+  two refs is one recipient.
+
+**Success is what a fresh read shows.** `send_*` reads the thread back and reports `stateRead`
+(the read worked) separately from `verified` (the message is there; for a new thread: with the text
+and every intended recipient among the participants). A municipality can block communication
+between profiles, so an accepted request is not evidence of a delivered message. Before sending,
+the reply path records the thread's message ids and the new-thread path the inbox's thread ids;
+the read-back may only be confirmed by something that was not there before — otherwise an
+identical earlier message, or an earlier attempt inside the clock-skew window, would confirm a
+send that never landed. If that baseline cannot be read, nothing is sent. The connection to Aula
+is made before the draft is taken, so a failure to connect does not use the draft up.
+
+People are never addressed by name. Contacts are reached child → `group_ref` → contact list, every
+person gets a session-scoped `person_ref`, and `find_recipients` matches on name AND role
+(optionally relation and child). Two parents with the same first name give two candidates and an
+instruction to ask the user — never a pick. Groups are not accepted as recipients: how Aula
+addresses one is unverified, and a mistake there reaches a whole class.
+
+What leaves the server about other families follows Aula's own contacts page, read from its
+frontend and checked against live responses: phone, email and address only with the person's
+consent flag (on a list row also `currentUserCanViewContactInformation`), never a child's address
+(nor that of a row without a role), no group home's home phone in a relation row, and nothing for
+an alias profile. `hasCustody` passes when Aula sends it, which it does only to roles that may see
+it. The same rules apply to `aula.contacts.parents`, the "Kontaktforældre" view. The contact list was measured to send an alias profile *without*
+the `alias` flag the frontend's name helper checks, so the placeholder name Aula shows instead
+("Alias-fornavn …") is recognised too.
+
+**Sensitive threads** are a category of their own: listed by subject only, refused by the ordinary
+message tools before anything is fetched, read only through a one-use read permit issued after the
+user has seen the subject, and replied to without ever opening the thread — the reply is confirmed
+from the listing's latest-message id instead.
+
+### Profile activation belongs to the access token
+
+Messaging and contact calls are refused (HTTP 403, Aula status code 10) until the guardian profile
+has been activated for the current access token — which `profiles.getProfileContext` does as a side
+effect. `AulaContext` used to cache the guardian id once per context, but `getClient()` builds a new
+client when the token expires, so after a refresh the activation was skipped and the first message
+call failed. The cache is now bound to the client it was fetched with, and every message and
+contact tool calls `getGuardianUserId()` before its first messaging or contacts request.
 
 ## Where this leaves us
 

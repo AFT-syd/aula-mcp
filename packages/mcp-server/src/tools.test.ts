@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { htmlToText, type TabulexChildAccess } from '@aula-mcp/aula-client';
+import { type CalendarEvent, htmlToText, type TabulexChildAccess } from '@aula-mcp/aula-client';
 import {
+  annotateParallelEvents,
   createTabulexChildRefs,
+  guardTabulex,
+  redactCprFromError,
   registerTools,
   slimPost,
   stripTabulexRaw,
@@ -57,31 +60,36 @@ describe('validateSetTemplateArgs', () => {
 });
 
 /**
- * aula.messages.mark_read is registered only when AULA_MCP_WRITE=1, and its
- * interesting behaviour is resolving `messageId` when the caller omits it.
- * Capture the handler off a stub McpServer rather than driving the whole
- * transport — the registration shape is all we need.
+ * aula.messages.mark_read is registered only when AULA_MCP_WRITE=1. It takes
+ * the same thread addressing as get_thread (a thread_ref from the listing, or
+ * a legacy id the listing has shown), refuses sensitive threads, and resolves
+ * the newest message itself. Capture the handlers off a stub McpServer rather
+ * than driving the whole transport — the registration shape is all we need.
  */
 describe('aula.messages.mark_read', () => {
-  type ToolHandler = (args: { threadId: number; messageId?: string }) => Promise<{
+  type ToolHandler = (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: 'text'; text: string }>;
   }>;
 
-  /** `pages` models Aula's 20-per-page paging: one array per page. */
+  /** `state.pages` models Aula's 20-per-page paging: one array per page. It
+   *  can be swapped between the listing and the write. */
   function register(pages: unknown[][]): {
-    markRead: (args: { threadId: number; messageId?: string }) => Promise<Record<string, unknown>>;
+    list: (args?: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    markRead: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    state: { pages: unknown[][] };
     calls: Array<[number, string]>;
     pagesRequested: number[];
   } {
+    const state = { pages };
     const calls: Array<[number, string]> = [];
     const pagesRequested: number[] = [];
     const fakeClient = {
       async getThreadsPage({ page = 0 }: { page?: number } = {}) {
         pagesRequested.push(page);
         return {
-          threads: pages[page] ?? [],
+          threads: state.pages[page] ?? [],
           page,
-          hasMorePages: page + 1 < pages.length,
+          hasMorePages: page + 1 < state.pages.length,
         };
       },
       async setLastReadMessage(threadId: number, messageId: string) {
@@ -97,10 +105,10 @@ describe('aula.messages.mark_read', () => {
         return '5000';
       },
     };
-    let handler: ToolHandler | undefined;
+    const handlers = new Map<string, ToolHandler>();
     const server = {
       registerTool(name: string, _config: unknown, fn: ToolHandler) {
-        if (name === 'aula.messages.mark_read') handler = fn;
+        handlers.set(name, fn);
       },
     };
     const previous = process.env.AULA_MCP_WRITE;
@@ -112,69 +120,117 @@ describe('aula.messages.mark_read', () => {
       if (previous === undefined) delete process.env.AULA_MCP_WRITE;
       else process.env.AULA_MCP_WRITE = previous;
     }
-    if (!handler) throw new Error('aula.messages.mark_read was not registered');
-    const registered = handler;
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const handler = handlers.get(name);
+      if (!handler) throw new Error(`${name} was not registered`);
+      const res = await handler(args);
+      const [first] = res.content;
+      if (!first) throw new Error('tool returned no content');
+      return JSON.parse(first.text) as Record<string, unknown>;
+    };
     return {
-      async markRead(args) {
-        const res = await registered(args);
-        const [first] = res.content;
-        if (!first) throw new Error('tool returned no content');
-        return JSON.parse(first.text) as Record<string, unknown>;
-      },
+      list: (args = {}) => call('aula.messages.list_threads', args),
+      markRead: (args) => call('aula.messages.mark_read', args),
+      state,
       calls,
       pagesRequested,
     };
   }
 
-  test('passes an explicit messageId straight through', async () => {
-    const { markRead, calls, pagesRequested } = register([]);
-    const out = await markRead({ threadId: 42, messageId: '6a3d24.99' });
-    expect(calls).toEqual([[42, '6a3d24.99']]);
-    expect(out.ok).toBe(true);
-    // An explicit id means no reason to go looking for the thread.
-    expect(pagesRequested).toEqual([]);
-  });
+  /** The thread_ref the listing gave the thread with `subject`. */
+  function refOf(listing: Record<string, unknown>, subject: string): string {
+    const threads = listing.threads as Array<{ subject?: string; thread_ref: string }>;
+    const found = threads.find((t) => t.subject === subject);
+    if (!found) throw new Error(`no listed thread with subject ${subject}`);
+    return found.thread_ref;
+  }
 
-  test('resolves messageId from the thread list when omitted', async () => {
-    const { markRead, calls } = register([
+  test('marks the newest message of the thread a thread_ref points at', async () => {
+    const { list, markRead, calls } = register([
       [
-        { id: 7, latestMessage: { id: 'aaa.1' } },
-        { id: 42, latestMessage: { id: 'bbb.2' } },
+        { id: 7, subject: 'a', latestMessage: { id: 'aaa.1' } },
+        { id: 42, subject: 'b', latestMessage: { id: 'bbb.2' } },
       ],
     ]);
-    const out = await markRead({ threadId: 42 });
+    const ref = refOf(await list(), 'b');
+    const out = await markRead({ thread_ref: ref });
     expect(calls).toEqual([[42, 'bbb.2']]);
-    expect(out.messageId).toBe('bbb.2');
+    expect(out.ok).toBe(true);
+    expect(out.thread_ref).toBe(ref);
+    // The raw id stays out of the answer when the caller used a ref.
+    expect(out.threadId).toBeUndefined();
   });
 
   test('pages past the first 20 to find an older thread', async () => {
-    const { markRead, calls, pagesRequested } = register([
-      [{ id: 7, latestMessage: { id: 'aaa.1' } }],
-      [{ id: 8, latestMessage: { id: 'bbb.2' } }],
-      [{ id: 42, latestMessage: { id: 'ccc.3' } }],
+    const { list, markRead, calls, pagesRequested } = register([
+      [{ id: 7, subject: 'a', latestMessage: { id: 'aaa.1' } }],
+      [{ id: 8, subject: 'b', latestMessage: { id: 'bbb.2' } }],
+      [{ id: 42, subject: 'c', latestMessage: { id: 'ccc.3' } }],
     ]);
-    const out = await markRead({ threadId: 42 });
+    const ref = refOf(await list({ page: 2 }), 'c');
+    pagesRequested.length = 0;
+    await markRead({ thread_ref: ref });
     expect(pagesRequested).toEqual([0, 1, 2]);
     expect(calls).toEqual([[42, 'ccc.3']]);
-    expect(out.messageId).toBe('ccc.3');
   });
 
-  test('stops paging when Aula says there are no more pages', async () => {
-    const { markRead, calls, pagesRequested } = register([
-      [{ id: 7, latestMessage: { id: 'aaa.1' } }],
-      [{ id: 8, latestMessage: { id: 'bbb.2' } }],
+  test('stops paging when Aula says there are no more pages, and writes nothing', async () => {
+    const { list, markRead, state, calls, pagesRequested } = register([
+      [{ id: 42, subject: 'x', latestMessage: { id: 'xxx.1' } }],
     ]);
-    const out = await markRead({ threadId: 42 });
+    const ref = refOf(await list(), 'x');
+    // The thread has since dropped out of the listing.
+    state.pages = [
+      [{ id: 7, subject: 'a', latestMessage: { id: 'aaa.1' } }],
+      [{ id: 8, subject: 'b', latestMessage: { id: 'bbb.2' } }],
+    ];
+    pagesRequested.length = 0;
+    const out = await markRead({ thread_ref: ref });
     expect(pagesRequested).toEqual([0, 1]);
     expect(calls).toEqual([]);
     expect(out.error).toBe('message_id_unresolved');
   });
 
   test('reports message_id_unresolved rather than writing a bogus marker', async () => {
-    const { markRead, calls } = register([[{ id: 7, latestMessage: { id: 'aaa.1' } }]]);
-    const out = await markRead({ threadId: 42 });
+    const { list, markRead, calls } = register([[{ id: 42, subject: 'x' }]]);
+    const out = await markRead({ thread_ref: refOf(await list(), 'x') });
     expect(calls).toEqual([]);
     expect(out.error).toBe('message_id_unresolved');
+  });
+
+  test('refuses a thread the listing marked sensitive, before any lookup', async () => {
+    const { list, markRead, calls, pagesRequested } = register([
+      [{ id: 42, subject: 'fortroligt', sensitive: true, latestMessage: { id: 'sss.1' } }],
+    ]);
+    const ref = refOf(await list(), 'fortroligt');
+    pagesRequested.length = 0;
+    const out = await markRead({ thread_ref: ref });
+    expect(out.error).toBe('sensitive_thread');
+    expect(calls).toEqual([]);
+    expect(pagesRequested).toEqual([]);
+  });
+
+  test('refuses when the thread turns sensitive between listing and write', async () => {
+    const { list, markRead, state, calls } = register([
+      [{ id: 42, subject: 'x', latestMessage: { id: 'xxx.1' } }],
+    ]);
+    const ref = refOf(await list(), 'x');
+    state.pages = [[{ id: 42, subject: 'x', sensitive: true, latestMessage: { id: 'xxx.1' } }]];
+    const out = await markRead({ thread_ref: ref });
+    expect(out.error).toBe('sensitive_thread');
+    expect(calls).toEqual([]);
+  });
+
+  test('a legacy threadId works only once a listing has shown the thread', async () => {
+    const { list, markRead, calls } = register([
+      [{ id: 42, subject: 'x', latestMessage: { id: 'xxx.1' } }],
+    ]);
+    await expect(markRead({ threadId: 42 })).rejects.toThrow(/list_threads/);
+    expect(calls).toEqual([]);
+    await list();
+    const out = await markRead({ threadId: 42 });
+    expect(calls).toEqual([[42, 'xxx.1']]);
+    expect(out.threadId).toBe(42);
   });
 
   test('is not registered without AULA_MCP_WRITE=1', () => {
@@ -365,5 +421,107 @@ describe('Tabulex child refs — keeping CPR off the tool surface', () => {
     expect('raw' in stripped).toBe(false);
     expect(stripped.dag).toBe(false);
     expect(stripped.dato).toBe('2026-09-10T00:00:00+02:00');
+  });
+});
+
+describe('Tabulex failures — CPR stays out of the error the model sees', () => {
+  // Review finding: a tool handler that throws has its message returned to the
+  // client verbatim, and Tabulex errors embedded the request URL — CPR included.
+  const leaky =
+    'Tabulex GET https://foraeldre.tabulex.net/api/Fravaer/Idag/0101209999 failed (status 500)';
+
+  test('redactCprFromError removes CPR-shaped numbers, dashed or not', () => {
+    expect(redactCprFromError(new Error(leaky)).message).not.toContain('0101209999');
+    expect(redactCprFromError('child 010120-9999 failed').message).not.toContain('010120-9999');
+    expect(redactCprFromError(new Error(leaky)).message).toContain('status 500');
+  });
+
+  test('guardTabulex rewrites a thrown failure and passes successes through', async () => {
+    const client = {
+      async fail(): Promise<never> {
+        throw new Error(leaky);
+      },
+      async ok(): Promise<string> {
+        return 'fine';
+      },
+    };
+    const guarded = guardTabulex(client);
+    let message = '';
+    try {
+      await guarded.fail();
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('status 500');
+    expect(message).not.toContain('0101209999');
+    expect(await guarded.ok()).toBe('fine');
+  });
+});
+
+describe('parallel calendar events', () => {
+  const lesson = (over: Partial<CalendarEvent> = {}): CalendarEvent => ({
+    type: 'lesson',
+    startDateTime: '2026-09-16T06:00:00.0000+00:00',
+    endDateTime: '2026-09-16T07:30:00.0000+00:00',
+    belongsToProfiles: [1000],
+    ...over,
+  });
+
+  test('two entries in the same slot point at each other, and nothing is dropped', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'DAN' }),
+      lesson({ id: 2, title: 'PÆD' }),
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.parallelWith).toEqual([{ id: 2, title: 'PÆD' }]);
+    expect(out[1]?.parallelWith).toEqual([{ id: 1, title: 'DAN' }]);
+    // The original fields survive untouched — this annotates, it does not merge.
+    expect(out[0]?.title).toBe('DAN');
+  });
+
+  test('a lesson that stands alone is left unannotated', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'DAN' }),
+      lesson({
+        id: 2,
+        title: 'MAT',
+        startDateTime: '2026-09-16T08:00:00.0000+00:00',
+        endDateTime: '2026-09-16T09:00:00.0000+00:00',
+      }),
+    ]);
+    expect(out[0]?.parallelWith).toBeUndefined();
+    expect(out[1]?.parallelWith).toBeUndefined();
+  });
+
+  test('three in one slot each name the other two', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'DAN' }),
+      lesson({ id: 2, title: 'PÆD' }),
+      lesson({ id: 3, title: 'UDESK' }),
+    ]);
+    expect(out[0]?.parallelWith).toHaveLength(2);
+    expect(out[2]?.parallelWith).toEqual([
+      { id: 1, title: 'DAN' },
+      { id: 2, title: 'PÆD' },
+    ]);
+  });
+
+  test('two children with class at the same time are NOT parallel', () => {
+    // Conflating them would be a false claim about the data, not a display choice.
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'DAN', belongsToProfiles: [1000] }),
+      lesson({ id: 2, title: 'MAT', belongsToProfiles: [1001] }),
+    ]);
+    expect(out[0]?.parallelWith).toBeUndefined();
+    expect(out[1]?.parallelWith).toBeUndefined();
+  });
+
+  test('entries that belong to no child are never grouped', () => {
+    const out = annotateParallelEvents([
+      lesson({ id: 1, title: 'A', belongsToProfiles: [] }),
+      lesson({ id: 2, title: 'B', belongsToProfiles: [] }),
+    ]);
+    expect(out[0]?.parallelWith).toBeUndefined();
+    expect(out[1]?.parallelWith).toBeUndefined();
   });
 });

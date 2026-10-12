@@ -26,17 +26,23 @@ import {
 import type {
   AulaEnvelope,
   CalendarEvent,
+  ContactEntry,
+  ContactGroupBlock,
+  ContactListFilter,
   DailyOverviewEntry,
   GetCalendarEventsArgs,
   GetPostsArgs,
   GetPresenceTemplatesArgs,
+  MailBoxOwnerRef,
   MessageThread,
   PostsData,
   PresenceTemplatesData,
   ProfileContextData,
   ProfilesByLoginData,
+  RecipientSearchResult,
   ThreadMessage,
   ThreadMessagesData,
+  ThreadReadFilter,
   ThreadsData,
   ThreadsPage,
   UpdatePresenceTemplateArgs,
@@ -261,24 +267,48 @@ export class AulaClient {
    * still returns 20. Without the flag a caller cannot tell a short page from
    * the end of the mailbox, so `getThreads` below (which drops it) is only
    * safe when you genuinely want the newest 20.
+   *
+   * `pageSize` is therefore applied HERE, by slicing: Aula's own frontend never
+   * sends one, and forwarding it meant a caller asking for 5 silently got 20.
+   * `hasMorePages` still describes Aula's page, not the slice.
    */
-  async getThreadsPage(opts: { page?: number; pageSize?: number } = {}): Promise<ThreadsPage> {
-    const params: Record<string, string> = {
+  async getThreadsPage(
+    opts: {
+      page?: number;
+      pageSize?: number;
+      /** `Unread` → only unread threads. Aula's own `filterOn` values. */
+      filterOn?: ThreadReadFilter;
+      /** Restrict to threads concerning these children (institutionProfileIds). */
+      activeChildren?: readonly number[];
+    } = {},
+  ): Promise<ThreadsPage> {
+    const params = new URLSearchParams({
+      method: 'messaging.getThreads',
       sortOn: 'date',
       orderDirection: 'desc',
       page: String(opts.page ?? 0),
-    };
-    if (opts.pageSize) params.pageSize = String(opts.pageSize);
-    const data = await this.getJson<ThreadsData>('messaging.getThreads', params);
+    });
+    if (opts.filterOn) params.set('filterOn', opts.filterOn);
+    // Array params take the `[]` suffix, same as childIds[] in getDailyOverview.
+    for (const id of opts.activeChildren ?? []) params.append('activeChildren[]', String(id));
+    const data = await this.getJsonRaw<ThreadsData>(params);
+    const threads = data?.threads ?? [];
     return {
-      threads: data?.threads ?? [],
+      threads: opts.pageSize ? threads.slice(0, opts.pageSize) : threads,
       page: data?.page ?? opts.page ?? 0,
       hasMorePages: data?.moreMessagesExist ?? false,
     };
   }
 
   /** Threads only, discarding the pagination signal. See getThreadsPage. */
-  async getThreads(opts: { page?: number; pageSize?: number } = {}): Promise<MessageThread[]> {
+  async getThreads(
+    opts: {
+      page?: number;
+      pageSize?: number;
+      filterOn?: ThreadReadFilter;
+      activeChildren?: readonly number[];
+    } = {},
+  ): Promise<MessageThread[]> {
     return (await this.getThreadsPage(opts)).threads;
   }
 
@@ -291,6 +321,22 @@ export class AulaClient {
     threadId: number,
     opts: { page?: number } = {},
   ): Promise<{ subject?: string; messages: ThreadMessage[] }> {
+    // Narrowed on purpose: the full object carries every participant and the
+    // guardian's own mailbox, and get_thread passes this result through as is.
+    const data = await this.getThreadData(threadId, opts);
+    return {
+      ...(data.subject ? { subject: data.subject } : {}),
+      messages: data.messages ?? [],
+    };
+  }
+
+  /**
+   * The whole `messaging.getMessagesForThread` object — subscription id,
+   * `leaveTime`, mailbox owner and recipients included. For the reply path,
+   * which has to check those before writing; reading tools use
+   * getMessagesForThread.
+   */
+  async getThreadData(threadId: number, opts: { page?: number } = {}): Promise<ThreadMessagesData> {
     // Probe-aware version: every OTHER method routes through
     // getJsonRaw / postJson, which call ensureApiVersion() implicitly
     // and end up on the current working version. This
@@ -332,10 +378,97 @@ export class AulaClient {
       );
     }
     const data: ThreadMessagesData = env.data ?? { messages: [] };
-    return {
-      ...(data.subject ? { subject: data.subject } : {}),
-      messages: data.messages ?? [],
-    };
+    return { ...data, messages: data.messages ?? [] };
+  }
+
+  /**
+   * `messaging.reply` — post a message into an existing thread, to the
+   * participants already in it.
+   *
+   * `threadId` is the thread's own `id` — what Aula's frontend sends as the
+   * `id` of the getMessagesForThread object it has open (it calls the value
+   * "subscriptionId", but it is NOT MessageThread.subscriptionId; see that
+   * field). Aula answers with the posted message as `data[0]` (the frontend
+   * appends exactly that to the thread). Plain-text HTML only, no
+   * attachments, never a common or OTP inbox — those are the two `null`s.
+   *
+   * This is a write to the live Aula platform that other people receive — the
+   * MCP server gates the tool that calls it behind `AULA_MCP_WRITE=1` and a
+   * prepare/send draft.
+   */
+  async replyToThread(args: {
+    threadId: number;
+    html: string;
+  }): Promise<ThreadMessage | undefined> {
+    const data = await this.postJson<ThreadMessage[]>(
+      'messaging.reply',
+      JSON.stringify({
+        threadId: args.threadId,
+        message: { text: args.html, attachmentIds: [] },
+        commonInboxId: null,
+        otpInboxId: null,
+      }),
+    );
+    return Array.isArray(data) ? data[0] : undefined;
+  }
+
+  /**
+   * `search.findRecipients` — the new-message form's recipient search, with
+   * the parameters that form sends for people: `fromModule: messages`,
+   * `docTypes: [Profile]`, the searcher's own institutionProfileId as `id`.
+   * Read-only. `text` must not be empty — an empty search is how Aula's
+   * frontend lists whole distribution lists.
+   */
+  async findRecipients(args: {
+    text: string;
+    ownInstitutionProfileId: number;
+    portalRoles: readonly string[];
+  }): Promise<RecipientSearchResult[]> {
+    const text = args.text.trim();
+    if (text.length === 0) throw new Error('findRecipients: empty search text');
+    const params = new URLSearchParams({
+      method: 'search.findRecipients',
+      text,
+      query: text,
+      id: String(args.ownInstitutionProfileId),
+      typeahead: 'true',
+      limit: '100',
+      fromModule: 'messages',
+    });
+    for (const role of args.portalRoles) params.append('portalRoles[]', role);
+    params.append('docTypes[]', 'Profile');
+    const data = await this.getJsonRaw<{ results?: RecipientSearchResult[] }>(params);
+    return Array.isArray(data?.results) ? data.results : [];
+  }
+
+  /**
+   * `messaging.startNewThread` — a new thread to the given people, never
+   * sensitive, no BCC, no attachments, from the guardian's own inbox. The
+   * frontend reads the new thread's id from `data.data`; that shape is only
+   * read in the bundle, so callers confirm the thread by reading it back.
+   *
+   * This is a write to the live Aula platform that other people receive — the
+   * MCP server gates the tool that calls it behind `AULA_MCP_WRITE=1` and a
+   * prepare/send draft.
+   */
+  async startNewThread(args: {
+    subject: string;
+    html: string;
+    recipients: readonly MailBoxOwnerRef[];
+    creator: MailBoxOwnerRef;
+  }): Promise<unknown> {
+    return this.postJson<unknown>(
+      'messaging.startNewThread',
+      JSON.stringify({
+        subject: args.subject,
+        recipients: args.recipients,
+        bccRecipients: [],
+        sensitive: false,
+        creator: args.creator,
+        message: { text: args.html, attachmentIds: [] },
+        forwardInfo: null,
+      }),
+    );
   }
 
   /**
@@ -344,6 +477,60 @@ export class AulaClient {
    */
   async getNotifications(): Promise<unknown> {
     return this.getJson<unknown>('notifications.getNotificationsForActiveProfile');
+  }
+
+  /**
+   * `groups.getGroupsByContext` — the groups (classes, SFO, …) the given
+   * children belong to. For a guardian Aula's contacts page sends only
+   * `childInstitutionProfileIds`, so the ids are a real filter here.
+   */
+  async getGroupsByContext(
+    childInstitutionProfileIds: readonly number[],
+  ): Promise<ContactGroupBlock[]> {
+    const params = new URLSearchParams({ method: 'groups.getGroupsByContext' });
+    for (const id of childInstitutionProfileIds) {
+      params.append('childInstitutionProfileIds[]', String(id));
+    }
+    const data = await this.getJsonRaw<ContactGroupBlock[]>(params);
+    return Array.isArray(data) ? data : [];
+  }
+
+  /**
+   * `profiles.getContactlist` — one page of a group's members, sorted by
+   * name. Pages start at 1 and hold up to 20 (Aula's frontend offers "load
+   * more" when a page has 20).
+   */
+  async getContactList(args: {
+    groupId: number;
+    filter: ContactListFilter;
+    page: number;
+  }): Promise<ContactEntry[]> {
+    const data = await this.getJsonRaw<ContactEntry[]>(
+      new URLSearchParams({
+        method: 'profiles.getContactlist',
+        groupId: String(args.groupId),
+        filter: args.filter,
+        field: 'name',
+        page: String(args.page),
+        order: 'asc',
+      }),
+    );
+    return Array.isArray(data) ? data : [];
+  }
+
+  /**
+   * `profiles.getContactParents` — the contacts page's "Kontaktforældre"
+   * view. Takes no group; pages start at 1.
+   */
+  async getContactParents(page: number): Promise<ContactEntry[]> {
+    const data = await this.getJsonRaw<ContactEntry[]>(
+      new URLSearchParams({
+        method: 'profiles.getContactParents',
+        page: String(page),
+        order: 'asc',
+      }),
+    );
+    return Array.isArray(data) ? data : [];
   }
 
   /**

@@ -63,6 +63,13 @@ function fakeContext(opts: FakeOptions = {}): AulaContext {
     async getClient(): Promise<AulaClient> {
       return fakeClient as unknown as AulaClient;
     },
+    // buildDiscoverManifest calls context.getProfilesByLogin({forceRefresh:
+    // true}) (the profiles cache, bypassed here same as the real AulaContext
+    // bypasses it for discover) rather than client.getProfilesByLogin()
+    // directly — mirror fakeClient's own implementation.
+    async getProfilesByLogin() {
+      return fakeClient.getProfilesByLogin();
+    },
   } as unknown as AulaContext;
 }
 
@@ -79,6 +86,7 @@ describe('buildDiscoverManifest', () => {
     // Always present capability blocks:
     expect(Object.keys(m.capabilities).sort()).toEqual([
       'calendar',
+      'contacts',
       'fravaer',
       'huskelisten',
       'lektier',
@@ -88,6 +96,7 @@ describe('buildDiscoverManifest', () => {
       'posts',
       'presence',
       'profiles',
+      'sensitive',
       'ugebrev',
       'ugeplan',
     ]);
@@ -208,8 +217,86 @@ describe('buildDiscoverManifest', () => {
     // agent to children[].userId produced a 403 on every calendar call.
     const m = await buildDiscoverManifest(fakeContext());
     const hint = m.usage.nameResolution;
-    expect(hint).toContain('child.id for presence childIds');
-    expect(hint).toContain('aula.calendar.events profileIds');
+    expect(hint).toContain('child.id for BOTH childIds and profileIds');
     expect(hint).not.toMatch(/userId[^.]*for[^.]*profileIds/);
+  });
+});
+
+describe('buildDiscoverManifest — probe', () => {
+  interface ProbeFakes {
+    meebook: () => Promise<{ items: unknown[] }>;
+    easyiq: () => Promise<{ items: unknown[] }>;
+    skoleportal: () => Promise<{ items: unknown[] }>;
+    ugebrev: () => Promise<{ items: unknown[] }>;
+  }
+
+  function probeContext(fakes: Partial<ProbeFakes>, calls: string[] = []): AulaContext {
+    const base = fakeContext({ childCount: 1 }) as unknown as Record<string, unknown>;
+    const wrap = (name: keyof ProbeFakes, method: string) => async () => ({
+      [method]: async () => {
+        calls.push(name);
+        const fake = fakes[name];
+        return fake ? await fake() : { items: [] };
+      },
+    });
+    return {
+      ...base,
+      getGuardianUserId: async () => '5000',
+      getMeebook: wrap('meebook', 'getWeekPlan'),
+      getEasyIq: wrap('easyiq', 'getWeekPlan'),
+      getEasyIqSkoleportal: wrap('skoleportal', 'getWeekPlan'),
+      getMinUddannelse: wrap('ugebrev', 'getUgebrev'),
+    } as unknown as AulaContext;
+  }
+
+  test('no probe by default — the providers are not called at all', async () => {
+    const calls: string[] = [];
+    const m = await buildDiscoverManifest(probeContext({}, calls));
+    expect(m.probed).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  test('probe reports what each source actually returned', async () => {
+    const m = await buildDiscoverManifest(
+      probeContext({
+        easyiq: async () => ({ items: [] }),
+        skoleportal: async () => ({ items: [{}, {}] }),
+        ugebrev: async () => ({ items: [{}] }),
+      }),
+      { probe: true },
+    );
+    const byTool = Object.fromEntries((m.probed ?? []).map((p) => [p.tool, p]));
+    expect(m.probed).toHaveLength(4);
+    expect(byTool['aula.ugeplan.easyiq']?.status).toBe('empty');
+    expect(byTool['aula.ugeplan.easyiq_skoleportal']).toMatchObject({
+      status: 'content',
+      items: 2,
+    });
+    expect(byTool['aula.ugebrev.minuddannelse']).toMatchObject({ status: 'content', items: 1 });
+  });
+
+  test('one failing provider does not sink the others, and its error is sanitised', async () => {
+    // The whole point of probing: the notat's school had three broken ugeplan
+    // providers and the real content in ugebrev.
+    const m = await buildDiscoverManifest(
+      probeContext({
+        meebook: async () => {
+          throw new Error(
+            'GET https://meebook.example/api/plan?access_token=SUPERSECRET&cpr=0101209999 failed (500)',
+          );
+        },
+        ugebrev: async () => ({ items: [{}] }),
+      }),
+      { probe: true },
+    );
+    const meebook = (m.probed ?? []).find((p) => p.tool === 'aula.ugeplan.meebook');
+    expect(meebook?.status).toBe('error');
+    expect(meebook?.error).not.toContain('SUPERSECRET');
+    expect(meebook?.error).not.toContain('0101209999');
+    // The other three still report their real status.
+    expect((m.probed ?? []).filter((p) => p.status !== 'error')).toHaveLength(3);
+    expect((m.probed ?? []).find((p) => p.tool === 'aula.ugebrev.minuddannelse')?.status).toBe(
+      'content',
+    );
   });
 });

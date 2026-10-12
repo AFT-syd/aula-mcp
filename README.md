@@ -62,6 +62,8 @@ Hvad selve `aula-mcp`-serveren gør (og ikke gør). Hvor dataen ender bagefter e
 - **Ingen telemetri, ingen tredjepart.** Programmet taler kun med Aula's egne servere (`api.aula.dk`, `login.aula.dk`), MitID (`nemlog-in.mitid.dk`) og vendor-API'erne (EasyIQ, Meebook m.fl. — hvis din skole har dem).
 - **MitID-godkendelsen går igennem MitID's egen infrastruktur.** Protokollen er skrevet om i TypeScript, men selve godkendelsen (QR-koden i MitID-appen) sker som altid mellem din enhed og nemlog-in.dk.
 - **`--debug`-tracen er opt-in og automatisk redaktet.** Cookies, OAuth-koder, MitID-payloads, M1-værdier, flowValueProof, adgangstokens osv. fjernes *før* noget skrives til disk. Trygt at vedhæfte en GitHub-issue.
+- **Andre familiers data går kun ud gennem en positivliste.** Kontakt-toolsene viser navn, rolle og relation; telefon, mail og adresse kun hvor Aulas egen side viser dem (samtykke-flaget), aldrig et barns adresse og aldrig for en alias-profil. Personer og grupper har sessions-refs (`person_ref`, `group_ref`), ikke rå id'er.
+- **Intet sendes uden et udkast, brugeren har set.** Beskeder sendes i to trin (`prepare_*` → `send_*`) med en `draft_ref`, der kun findes i serverens hukommelse, udløber efter 5 minutter og kan bruges én gang. Afsendelsen bekræftes ved at læse tilstanden tilbage, ikke ved Aulas svar-flag.
 - **Loopback-only = familien kan ikke ramme serveren fra deres egen enhed.** Skal flere enheder i husstanden kunne spørge, så enten reverse proxy (se Self-hosting) eller en Home Assistant-integration på et tidspunkt.
 
 ---
@@ -334,7 +336,12 @@ Form:
     profiles:      { summary, tools: ['aula.profiles.list'] },
     presence:      { summary, tools: ['aula.presence.today', 'aula.presence.templates'] },
     calendar:      { summary, tools: ['aula.calendar.events'] },
-    messages:      { summary, tools: ['aula.messages.list_threads', 'aula.messages.get_thread'] },
+    messages:      { summary, tools: ['aula.messages.list_threads', 'aula.messages.new_since',
+                                      'aula.messages.get_thread', 'aula.messages.find_recipients',
+                                      /* + prepare/send_reply, prepare/send_thread med WRITE=1 */] },
+    contacts:      { summary, tools: ['aula.contacts.groups', 'aula.contacts.list', 'aula.contacts.parents'] },
+    sensitive:     { summary, tools: ['aula.sensitive.prepare_read', 'aula.sensitive.read_thread',
+                                      /* + prepare/send_reply med WRITE=1 */] },
     notifications: { summary, tools: ['aula.notifications.list'] },
     posts:         { summary, tools: ['aula.posts.list'] },
     ugeplan:       { summary, tools: ['aula.ugeplan.easyiq'] },          // kun den detekterede vendor
@@ -354,7 +361,16 @@ Form:
 
 ### Komme/gå — sæt afleverings- og hentetider
 
-`aula-mcp` er read-only som standard. Sætter du `AULA_MCP_WRITE=1`, registreres ét ekstra tool — `aula.presence.set_template` — der kan oprette eller overskrive et barns komme/gå-skabelon for én dag: afleveringstid, hentetid, henteform (`picked_up_by` "Hentes af", `self_decider` "Selvbestemmer", `send_home` "Sendes hjem", `go_home_with` "Går hjem med") og evt. en ugentlig gentagelse. Læse-toolet `aula.presence.templates` viser den nuværende plan og er altid slået til. Skrive-toolet rører rigtige data i Aula, så det sidder bevidst bag et flag — en agent skal ikke kunne omlægge dit barns hentetid uden at du har slået det til. `writeEnabled` i manifestet afspejler om flaget er sat.
+`aula-mcp` er read-only som standard. Sætter du `AULA_MCP_WRITE=1`, registreres skrive-toolsene: komme/gå (`aula.presence.set_template`), sygemelding (`aula.presence.report_sick`, `aula.fravaer.tabulex_meld_syg`) og beskeder (se næste afsnit). `aula.presence.set_template` kan oprette eller overskrive et barns komme/gå-skabelon for én dag: afleveringstid, hentetid, henteform (`picked_up_by` "Hentes af", `self_decider` "Selvbestemmer", `send_home` "Sendes hjem", `go_home_with` "Går hjem med") og evt. en ugentlig gentagelse. Læse-toolet `aula.presence.templates` viser den nuværende plan og er altid slået til. Skrive-toolet rører rigtige data i Aula, så det sidder bevidst bag et flag — en agent skal ikke kunne omlægge dit barns hentetid uden at du har slået det til. `writeEnabled` i manifestet afspejler om flaget er sat.
+
+### Beskeder, kontakter og følsomme tråde
+
+- **Læse:** `aula.messages.list_threads` / `new_since` / `get_thread` adresserer tråde med en `thread_ref`. Læsning markerer aldrig en tråd som læst i Aula.
+- **Kontakter (kun læsning):** `aula.contacts.groups(child_ids)` → `group_ref` → `aula.contacts.list` giver børnene med deres forældre (`relation`: Mor/Far…), forældrene eller personalet; `aula.contacts.parents` giver "Kontaktforældre"-visningen. Samme person får samme `person_ref` på tværs af grupper i sessionen.
+- **Finde en modtager:** `aula.messages.find_recipients` leder i en gruppe på navn OG rolle (evt. relation og barn) — aldrig på navn alene, for to forældre kan hedde det samme. Flere træffere giver kandidater, og agenten skal spørge brugeren.
+- **Svare i en tråd** (`WRITE=1`): `aula.messages.prepare_reply` sender intet og returnerer en preview med alle modtagere; `aula.messages.send_reply` sender og læser tråden tilbage (`verified` kræver en besked, der ikke var der før afsendelsen).
+- **Ny tråd** (`WRITE=1`): `aula.messages.prepare_thread(person_refs, subject, text)` krydstjekker hver modtager mod Aulas egen modtagersøgning — søgningen skal returnere personen under samme id, navn og rolle som kontaktlisten, ellers intet udkast. Kun forældre og personale, aldrig alias-profiler, højst 5 modtagere, ingen grupper, aldrig følsom, ingen vedhæftninger. `aula.messages.send_thread` sender og bekræfter ved at finde tråden igen med teksten og alle modtagere.
+- **Følsomme tråde** er en egen kategori: listen viser kun emnet, de almindelige besked-tools afviser dem, og læsning kræver `aula.sensitive.prepare_read` → brugerens ja → `aula.sensitive.read_thread`. Svar (`WRITE=1`) åbner aldrig tråden.
 
 ---
 
@@ -405,8 +421,9 @@ Komplet hjælp med eksempler: `pnpm aula --help`
 | `AULA_MCP_HOST` | `127.0.0.1` | Bind-interface. Nægter ikke-loopback medmindre `AULA_MCP_ALLOW_REMOTE=1`. |
 | `AULA_MCP_DIR` | `~/.config/aula-mcp` | Konfig-mappe (fil-backend + transcripts + login-log). |
 | `AULA_MCP_RAW=1` | off | Aktiverer `aula.raw_request` escape-hatch-toolet. |
-| `AULA_MCP_WRITE=1` | off | Aktiverer skrive-tools (`aula.presence.set_template` — sæt komme/gå-tider). Serveren er read-only uden den. |
+| `AULA_MCP_WRITE=1` | off | Aktiverer skrive-tools: komme/gå, sygemelding, markér tråd som læst og afsendelse af beskeder (svar, ny tråd, svar i følsom tråd). Serveren er read-only uden den. |
 | `AULA_MCP_LOG=1` | off | Verbose console-logs fra auth/client-lagene (samme redaktion som wire-transcripts). |
+| `AULA_MCP_TRACE_FILE` | unset | Sti til en JSONL wire-trace-fil. Sat: hvert HTTP-kald serveren laver (Aula, Tabulex, EasyIQ, ...) føjes til filen som én saneret linje (metode, URL, headers, bodies, status, varighed — samme sanering som `aula login --debug`). Filen oprettes/genbruges med tilstand 0600; en sti serveren ikke kan skrive til stopper opstarten med en fejl i stedet for at tabe spor tavst. Se "Wire-transcripts" nedenfor. |
 | `AULA_MCP_ALLOW_REMOTE=1` | off | Tillader at binde til ikke-loopback adresser (fx bag en reverse proxy). Kræver auth — se de tre næste. |
 | `AULA_MCP_AUTH_PASSWORD_HASH` | unset | argon2id-hash fra `aula auth set-password`. Slår den indbyggede OAuth-server til, så claude.ai kan forbinde. |
 | `AULA_MCP_PUBLIC_URL` | unset | Den offentlige URL klienterne forbinder til, inkl. sti-præfiks. Bliver OAuth-issuer. Påkrævet sammen med hash'en. |
@@ -419,6 +436,8 @@ Komplet hjælp med eksempler: `pnpm aula --help`
 `aula transcript view <file>` pretty-printer en af dem.
 
 Den samme redaktion gælder console-logs fra `AULA_MCP_LOG=1` og `aula login --debug` — request-URL'er bliver renset, før de skrives, så `access_token`-query-parameteren aldrig lander i en terminal-log.
+
+**Den kørende server** (ikke CLI'en) har samme mulighed via `AULA_MCP_TRACE_FILE=/sti/til/fil.jsonl` — slået fra som standard. Sat, føjes hvert HTTP-kald serveren laver til filen, saneret med de samme redaction-lister (`SECRET_HEADERS`, `SECRET_BODY_FIELDS`, `SECRET_URL_PARAMS` i `wire-tracer.ts`). Filen er append-only og vokser så længe variablen er sat — intet roterer eller trimmer den automatisk; sluk variablen og ryd filen op efter en debug-session. Oprettes med tilstand 0600; en sti serveren ikke kan skrive til (ugyldig mappe, read-only filsystem) stopper opstarten med en fejlbesked i stedet for at starte "succesfuldt" og så tabe hvert spor.
 
 ---
 

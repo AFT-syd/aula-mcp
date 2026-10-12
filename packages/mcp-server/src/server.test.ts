@@ -134,6 +134,20 @@ function fakeContext(opts: FakeOptions = {}): AulaContext {
     async getMessagesForThread(threadId: number) {
       return { subject: 'Sommerfest', messages: opts.threads?.[threadId] ?? [] };
     },
+    // The listing the message tools resolve thread ids against: a raw id is
+    // only accepted once a listing has shown the thread (and said it is not
+    // sensitive).
+    async getThreadsPage() {
+      return {
+        threads: Object.keys(opts.threads ?? {}).map((id) => ({
+          id: Number(id),
+          subject: 'Sommerfest',
+          sensitive: false,
+        })),
+        page: 0,
+        hasMorePages: false,
+      };
+    },
   };
   return {
     record: {
@@ -148,6 +162,12 @@ function fakeContext(opts: FakeOptions = {}): AulaContext {
     },
     async getGuardianUserId(): Promise<string> {
       return '5000';
+    },
+    // aula.discover now reads via context.getProfilesByLogin({forceRefresh:
+    // true}) (the profiles cache) rather than client.getProfilesByLogin()
+    // directly — mirror fakeClient's own implementation.
+    async getProfilesByLogin() {
+      return fakeClient.getProfilesByLogin();
     },
   } as unknown as AulaContext;
 }
@@ -542,6 +562,8 @@ describe('MCP server: tools/call(aula.messages.get_attachment)', () => {
     dir = await mkdtemp(join(tmpdir(), 'aula-mcp-attachments-'));
     previousDir = setEnv('AULA_MCP_ATTACHMENTS_DIR', dir);
     realFetch = globalThis.fetch;
+    // As a real client would: list first, so the legacy threadIds below are known.
+    await harness.call(19, 'aula.messages.list_threads', {});
   });
 
   afterAll(async () => {

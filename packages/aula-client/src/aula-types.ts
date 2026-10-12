@@ -278,6 +278,12 @@ export interface CalendarLessonParticipant {
 }
 
 export interface CalendarEvent {
+  /** Not exercised against the live API in this codebase before now — added
+   *  for the parallel-event annotation (mcp-server's `annotateParallelEvents`),
+   *  which needs something to name the "other" event by. Other Aula entity
+   *  ids in this codebase are a mix of `number` (children, institutions) and
+   *  `string` (message ids), so this is left loose rather than guessed at. */
+  id?: number | string;
   type: 'lesson' | 'event' | string;
   title?: string;
   startDateTime: string;
@@ -345,17 +351,62 @@ export interface GetPostsArgs {
 // messaging.*
 // --------------------------------------------------------------------------
 
+/** A mailbox owner as messaging returns it — the sender, a recipient, or the
+ *  guardian's own mailbox. */
+export interface MailBoxOwner {
+  id?: number;
+  profileId?: number;
+  portalRole?: string;
+  mailBoxOwnerType?: string;
+  isDeactivated?: boolean;
+}
+
 export interface MessageThread {
+  /**
+   * The thread's own id — what `messaging.getMessagesForThread` takes AND what
+   * `messaging.reply` takes as its `threadId`.
+   */
   id: number;
+  /**
+   * A DIFFERENT number from `id` (measured 2026-10-10: different in all 20
+   * threads sampled). NOT the reply target, despite Aula's frontend calling
+   * the reply target "subscriptionId": that variable holds the thread `id`
+   * (the frontend matches `e.id == shownSubscriptionId`). Measured live the
+   * same day: getMessagesForThread(<listing id>) returned an object whose
+   * `id` was that listing id, not the `subscriptionId`. The frontend uses
+   * this field for thread bundles.
+   */
+  subscriptionId?: number;
+  /** `unbundled` in every thread sampled; `bundle` groups several threads. */
+  subscriptionType?: string;
   read: boolean;
   subject?: string;
+  startedTime?: string;
+  /** Who started the thread. */
+  creator?: { fullName?: string; mailBoxOwner?: MailBoxOwner };
+  /** Which of the guardian's own children the thread concerns. NB: `profileId`
+   *  here is a different id space from the institutionProfileId that
+   *  `aula.discover` returns as `children[].id`. */
+  regardingChildren?: Array<{ profileId?: number; displayName?: string; shortName?: string }>;
+  /**
+   * Every participant, with their own read receipts (`lastReadTimestamp`).
+   * Measured 2026-10-10: this field is ~half of every thread's size and
+   * carries other families' data, so the MCP layer reduces it to a count.
+   */
+  recipients?: unknown[];
+  /** Recipients beyond those listed in `recipients`. */
+  extraRecipientsCount?: number;
+  sensitive?: boolean;
+  muted?: boolean;
+  marked?: boolean;
   /** Latest message's preview, when included. */
   lastMessage?: { sendDateTime?: string; sender?: { fullName?: string } };
   /** Latest message, when included in the threads list response. Distinct
    *  from `lastMessage` (preview-only): `latestMessage.id` is what scripts
    *  need to detect "is there a new message in this thread" without
-   *  fetching the full thread content via `messaging.getMessagesForThread`. */
-  latestMessage?: { id?: string; sendDateTime?: string };
+   *  fetching the full thread content via `messaging.getMessagesForThread`.
+   *  Carries no sender — only the time and the HTML body. */
+  latestMessage?: { id?: string; sendDateTime?: string; text?: { html?: string } };
 }
 
 export interface ThreadsData {
@@ -382,6 +433,10 @@ export interface ThreadsPage {
   hasMorePages: boolean;
 }
 
+/** `messaging.getThreads`' `filterOn` values, from Aula's frontend enum
+ *  `{ READ: "Read", UNREAD: "Unread" }`. */
+export type ThreadReadFilter = 'Read' | 'Unread';
+
 export interface ThreadMessageAttachmentFile {
   name?: string;
   url?: string;
@@ -399,18 +454,131 @@ export interface ThreadMessageAttachment {
 }
 
 export interface ThreadMessage {
+  /** Message ids are strings in the listing (`latestMessage.id`); left loose
+   *  here because this shape has not been observed with an id. */
+  id?: string | number;
   messageType?: string;
   text?: { html?: string; plain?: string };
-  sender?: { fullName?: string };
+  sender?: { fullName?: string; mailBoxOwner?: MailBoxOwner };
   subject?: string;
   sendDateTime?: string;
   hasAttachments?: boolean;
   attachments?: ThreadMessageAttachment[];
 }
 
+/**
+ * `messaging.getMessagesForThread`' `data`. Aula's frontend stores this
+ * object as the selected subscription and replies with `threadId: data.id`.
+ * Measured 2026-10-10: `id` here is the thread id it was fetched with — NOT
+ * the listing's `subscriptionId` (see MessageThread.subscriptionId). Only
+ * `subject` and `messages` are exercised by the read tools; the rest is read
+ * by the reply path, which refuses when `id` does not agree with the listing.
+ */
 export interface ThreadMessagesData {
   messages: ThreadMessage[];
   subject?: string;
+  id?: number;
+  /** Set when the guardian has left the thread. Aula's UI disables writing. */
+  leaveTime?: string | null;
+  sensitive?: boolean;
+  /** Whose inbox the thread is in — a guardian's own, or a common/OTP inbox. */
+  mailBoxOwner?: MailBoxOwner;
+  recipients?: Array<{ fullName?: string; mailBoxOwner?: MailBoxOwner }>;
+  extraRecipientsCount?: number;
+}
+
+// --------------------------------------------------------------------------
+// groups.getGroupsByContext / profiles.getContactlist / getContactParents
+// --------------------------------------------------------------------------
+//
+// Shapes READ in Aula's public frontend bundle (2026-10-11, re-read against
+// the live responses the same day): every field is optional and the MCP layer
+// passes on only an allowlist of them.
+
+/** One group a child belongs to, as the contacts page's group menu uses it. */
+export interface ContactGroup {
+  id?: number;
+  name?: string;
+  /** The group the frontend opens by default. */
+  showAsDefault?: boolean;
+}
+
+/**
+ * `groups.getGroupsByContext` returns blocks, each with its `groups`. The
+ * contacts page's group menu labels a block with `displayName` and keys it on
+ * `profileId`.
+ */
+export interface ContactGroupBlock {
+  groups?: ContactGroup[];
+  displayName?: string;
+  profileId?: number;
+}
+
+/** One person in a contact list — a child, guardian or employee. */
+export interface ContactEntry {
+  id?: number;
+  institutionProfileId?: number;
+  profileId?: number;
+  fullName?: string;
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+  shortName?: string;
+  /** True when the name is an alias — Aula's frontend appends "(alias)" to it. */
+  alias?: boolean;
+  /** Portal role: `child`, `guardian`, `employee`, `otp`. */
+  role?: string;
+  /** For a guardian under a child: "Mor", "Far", … */
+  relation?: string;
+  /** Sent only to roles that may see it; the frontend shows it when non-null. */
+  hasCustody?: boolean | null;
+  /** Aula's frontend shows address and phone numbers only when this is true. */
+  userHasGivenConsentToShowContactInformation?: boolean;
+  /** A list row's details also need this; relation rows do not check it. */
+  currentUserCanViewContactInformation?: boolean;
+  /** `profile` or `groupHome` — a group home's home phone is not shown. */
+  contactType?: string;
+  email?: string | null;
+  homePhoneNumber?: string | null;
+  mobilePhoneNumber?: string | null;
+  workPhoneNumber?: string | null;
+  address?: { street?: string; postalCode?: number | string; postalDistrict?: string } | null;
+  /** The people related to this one: a child's guardians, a guardian's children. */
+  relations?: ContactEntry[];
+}
+
+/** `profiles.getContactlist`' `filter` values the contacts page offers a guardian. */
+export type ContactListFilter = 'child' | 'guardian' | 'employee';
+
+// --------------------------------------------------------------------------
+// search.findRecipients / messaging.startNewThread
+// --------------------------------------------------------------------------
+//
+// READ in Aula's public frontend bundle (2026-10-11), not yet observed: the
+// new-message form's recipient search and its send call.
+
+/**
+ * One hit from `search.findRecipients`. For a `Profile` hit, `id` is the
+ * person's institutionProfileId: the search component turns it into the
+ * recipient's `id`, and drops the user's own hit by comparing it with their
+ * own `institutionProfileId`s.
+ */
+export interface RecipientSearchResult {
+  id?: number | string;
+  docId?: number | string;
+  /** `Profile`, `Group`, `CommonInbox`, … */
+  docType?: string;
+  name?: string;
+  portalRole?: string;
+  institutionCode?: string;
+  /** Set when the municipality blocks messages between you and this profile. */
+  communicationBlock?: unknown;
+}
+
+/** A `messaging.startNewThread` recipient or creator. */
+export interface MailBoxOwnerRef {
+  id: number;
+  mailBoxOwnerType: 'institutionProfile';
 }
 
 // --------------------------------------------------------------------------
