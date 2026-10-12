@@ -655,7 +655,9 @@ export function registerTools(server: McpServer, context: AulaContext): void {
         'Call aula.discover first and pass children[].id as profileIds. ' +
         'Pass `range` for a preset window (today/tomorrow/this_week/next_week) ' +
         'OR `start`+`end` for a specific window. Timestamps are formatted as Aula ' +
-        'expects: "YYYY-MM-DD HH:MM:SS.0000+ZZZZ". Aula uses Europe/Copenhagen. The same ' +
+        'expects: "YYYY-MM-DD HH:MM:SS.0000+ZZZZ" in Europe/Copenhagen wall-clock time. ' +
+        'The returned startDateTime/endDateTime are UTC ("+00:00") — convert to ' +
+        'Europe/Copenhagen before showing a time to the user. The same ' +
         'lesson often appears twice (the subject plus support staff or a parallel group); ' +
         'events with the exact same start/end for the same child carry `parallelWith` ' +
         'naming the sibling(s) — show all of them rather than picking one.',

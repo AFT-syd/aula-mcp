@@ -190,7 +190,7 @@ export async function buildDiscoverManifest(
       pickOne:
         'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors or returns nothing; then try the neighbouring one (ugeplan ↔ ugebrev). detectedWidgets can be incomplete. If you are about to try several ugeplan/ugebrev tools by hand, call aula.discover with probe:true instead — it makes those calls once, server-side, and returns `probed` with the status per source (content/empty/error).',
       timeWindows:
-        'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Times are Europe/Copenhagen.',
+        'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Request windows are Europe/Copenhagen wall-clock, but aula.calendar.events RETURNS UTC timestamps — convert before showing a time (+2h summer, +1h winter).',
       language:
         'Reply in the user\'s language. Format dates as "mandag 12. maj" for Danish output.',
     },

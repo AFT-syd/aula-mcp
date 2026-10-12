@@ -67,6 +67,14 @@ function fakeContext(opts: FakeOptions = {}): AulaContext {
 }
 
 describe('buildDiscoverManifest', () => {
+  test('timeWindows says calendar results are UTC, so agents convert before showing a time', async () => {
+    // calendar.getEventsByProfileIdsAndResourceIds answers with "+00:00"
+    // timestamps; an agent told "don't shift them" shows lessons 1–2 h early.
+    const m = await buildDiscoverManifest(fakeContext());
+    expect(m.usage.timeWindows).toContain('UTC');
+    expect(m.usage.timeWindows).not.toContain("don't shift");
+  });
+
   test('basic shape: user, children, apiVersion, tokens, capabilities', async () => {
     const m = await buildDiscoverManifest(fakeContext());
     expect(m.user.username).toBe('cj');
