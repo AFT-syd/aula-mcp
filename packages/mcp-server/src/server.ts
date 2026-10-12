@@ -24,6 +24,11 @@
  *   AULA_MCP_WRITE=1          — enable write tools (aula.presence.set_template);
  *                               the server is read-only without it
  *   AULA_MCP_LOG=1            — verbose console logs from auth/client layers
+ *   AULA_MCP_TRACE_FILE       — path to a JSONL wire-trace file. When set, every
+ *                               HTTP exchange the server makes is appended as one
+ *                               line (same secret redaction as `aula login --debug`).
+ *                               Off by default; created 0600; an unusable path
+ *                               fails startup. See trace-config.ts.
  *   AULA_MCP_ALLOW_REMOTE=1   — allow binding to non-loopback addresses (refuses
  *                               by default; the server is single-user and any
  *                               peer with /mcp access can drive your tokens)
@@ -48,6 +53,7 @@ import { AulaContext } from './aula-context.ts';
 import { createMcpApp, type McpApp } from './setup.ts';
 import { createSetupApp } from './setup-ui.ts';
 import { HonoSseTransport } from './sse-transport.ts';
+import { createHttpTracer, resolveTraceFilePath } from './trace-config.ts';
 
 const PORT = Number(process.env.AULA_MCP_PORT ?? 7878);
 const HOST = process.env.AULA_MCP_HOST ?? '127.0.0.1';
@@ -60,7 +66,21 @@ assertSafeBindAddress(HOST);
 // token refresh (de-duplicated per context), the AulaClient and its caches;
 // one per session meant each session refreshed and cached on its own and
 // held its own token-file watcher.
-const aulaContext = new AulaContext({ logger });
+//
+// AULA_MCP_TRACE_FILE is validated eagerly so a bad path refuses to start
+// (like assertSafeBindAddress) instead of silently dropping every trace entry.
+const traceFilePath = resolveTraceFilePath();
+let httpTracer: ReturnType<typeof createHttpTracer>;
+try {
+  httpTracer = createHttpTracer(traceFilePath);
+} catch (err) {
+  process.stderr.write(
+    `AULA_MCP_TRACE_FILE="${traceFilePath}" is not usable: ${(err as Error).message}\n`,
+  );
+  process.exit(2);
+}
+if (httpTracer) logger.info('aula-mcp.trace_file.enabled', { path: traceFilePath });
+const aulaContext = new AulaContext({ logger, ...(httpTracer ? { tracer: httpTracer } : {}) });
 
 // Streamable HTTP transport.
 //

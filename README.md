@@ -363,6 +363,7 @@ Komplet hjælp med eksempler: `pnpm aula --help`
 | `AULA_MCP_RAW=1` | off | Aktiverer `aula.raw_request` escape-hatch-toolet. |
 | `AULA_MCP_WRITE=1` | off | Aktiverer skrive-tools (`aula.presence.set_template` — sæt komme/gå-tider). Serveren er read-only uden den. |
 | `AULA_MCP_LOG=1` | off | Verbose console-logs fra auth/client-lagene (samme redaktion som wire-transcripts). |
+| `AULA_MCP_TRACE_FILE` | off | Sti til en JSONL-fil, hvor serveren tilføjer ét redaktet request/response pr. HTTP-kald (som `--debug`-transcripts). Filen oprettes 0600 og vokser, til den fjernes; en ubrugelig sti stopper opstart. Svar-bodies (beskeder, børns navne) redaktes ikke — slå kun til under fejlsøgning. |
 | `AULA_MCP_ALLOW_REMOTE=1` | off | Tillader at binde til ikke-loopback adresser (fx bag en reverse proxy). |
 
 ### Wire-transcripts

@@ -19,6 +19,7 @@ import {
   type StoredTokenRecord,
   silentLogger,
   type TokenStore,
+  type WireTracer,
   withFreshTokens,
 } from '@aula-mcp/aula-auth';
 import {
@@ -35,12 +36,16 @@ import {
 export interface AulaContextOptions {
   store?: TokenStore;
   logger?: Logger;
+  /** Wire tracer for every HTTP exchange this context's clients make.
+   *  Defaults to AulaHttpClient's own noop. See trace-config.ts. */
+  tracer?: WireTracer;
 }
 
 export class AulaContext {
   private readonly store: TokenStore;
   private readonly logger: Logger;
-  private readonly http: AulaHttpClient;
+  // Not `private` so tests can check which tracer is wired in.
+  readonly http: AulaHttpClient;
   // Fields below are declared as `T | undefined` (not just `T?`) so we can
   // explicitly assign `undefined` to invalidate the cache (the strict
   // `exactOptionalPropertyTypes` flag forbids `field = undefined` on `T?`).
@@ -59,7 +64,10 @@ export class AulaContext {
   constructor(options: AulaContextOptions = {}) {
     this.store = options.store ?? defaultStore();
     this.logger = options.logger ?? silentLogger;
-    this.http = new AulaHttpClient({ logger: this.logger });
+    this.http = new AulaHttpClient({
+      logger: this.logger,
+      ...(options.tracer ? { tracer: options.tracer } : {}),
+    });
     this.watchTokenFile();
   }
 
