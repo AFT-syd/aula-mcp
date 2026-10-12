@@ -188,7 +188,7 @@ export async function buildDiscoverManifest(
       whichSource:
         'Danish users mix these up: "skoleskema", "lektioner", "hvornår har de matematik" → aula.calendar.events (the timetable). "Ugeplan", "ugebrev", "hvad sker der i klassen denne uge" → the teacher-written text in ugeplan/ugebrev. If the wording could mean either, check both.',
       pickOne:
-        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors. If you are about to try several ugeplan/ugebrev tools by hand, call aula.discover with probe:true instead — it makes those calls once, server-side, and returns `probed` with the status per source (content/empty/error).',
+        'For ugeplan/ugebrev/opgaver/huskelisten, call only capabilities[area].tools[0] — that is the provider this user actually has. Skip alternates unless the first errors or returns nothing; then try the neighbouring one (ugeplan ↔ ugebrev). detectedWidgets can be incomplete. If you are about to try several ugeplan/ugebrev tools by hand, call aula.discover with probe:true instead — it makes those calls once, server-side, and returns `probed` with the status per source (content/empty/error).',
       timeWindows:
         'For calendar/ugeplan: "denne uge"→range:"this_week", "næste uge"→"next_week", "i dag"→"today", "i morgen"→"tomorrow". Times are Europe/Copenhagen.',
       language:
@@ -375,43 +375,37 @@ function buildCapabilities(
     opgaver: {
       summary: 'Homework / task list from Min Uddannelse.',
       tools: ['aula.opgaver.minuddannelse'],
-      ...(opgaverDetected.length === 0
-        ? {
-            notes:
-              'Min Uddannelse opgaver widget (0030) not detected — call may return empty. Skip if user did not specifically ask for opgaver.',
-          }
-        : {}),
+      ...missingWidgetNote(opgaverDetected, 'Min Uddannelse opgaver widget (0030)', 'opgaver'),
     },
     ugebrev: {
       summary: 'Weekly newsletter from Min Uddannelse.',
       tools: ['aula.ugebrev.minuddannelse'],
-      ...(ugebrevDetected.length === 0
-        ? {
-            notes:
-              'Min Uddannelse ugebrev widget (0029) not detected — call may return empty. Skip if user did not specifically ask for ugebrev.',
-          }
-        : {}),
+      ...missingWidgetNote(ugebrevDetected, 'Min Uddannelse ugebrev widget (0029)', 'ugebrev'),
     },
     huskelisten: {
       summary: 'Homework reminders from Systematic.',
       tools: ['aula.huskelisten.systematic'],
-      ...(huskelistenDetected.length === 0
-        ? {
-            notes:
-              'Systematic widget (0062) not detected — call may return empty. Skip if user did not specifically ask for huskelisten.',
-          }
-        : {}),
+      ...missingWidgetNote(huskelistenDetected, 'Systematic widget (0062)', 'huskelisten'),
     },
     lektier: {
       summary: 'Homework items from EasyIQ Lektier (widget 0142).',
       tools: ['aula.lektier.easyiq'],
-      ...(lektierDetected.length === 0
-        ? {
-            notes:
-              'EasyIQ Lektier widget (0142) not detected — call may return empty. Skip if user did not specifically ask for lektier.',
-          }
-        : {}),
+      ...missingWidgetNote(lektierDetected, 'EasyIQ Lektier widget (0142)', 'lektier'),
     },
+  };
+}
+
+/** Note for a capability whose widget is absent from detectedWidgets. That
+ *  list has been observed to omit widgets that work, so the agent is told to
+ *  try the call rather than skip it. */
+function missingWidgetNote(
+  detected: readonly unknown[],
+  widget: string,
+  capability: string,
+): { notes?: string } {
+  if (detected.length > 0) return {};
+  return {
+    notes: `${widget} not in detectedWidgets. That list can omit widgets that work, so treat it as a hint, not an inventory — the call is cheap, so make it anyway when the user asked for ${capability}.`,
   };
 }
 

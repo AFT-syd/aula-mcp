@@ -135,6 +135,7 @@ describe('buildDiscoverManifest', () => {
   test('lektier carries a "not detected" note when 0142 absent', async () => {
     const m = await buildDiscoverManifest(fakeContext({ widgets: [] }));
     expect(m.capabilities.lektier?.notes).toContain('0142');
+    expect(m.capabilities.lektier?.notes).toContain('hint, not an inventory');
   });
 
   test('rawRequestEnabled reflects AULA_MCP_RAW env', async () => {
